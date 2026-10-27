@@ -1,0 +1,751 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>Halo TCG — Table</title>
+<!--
+  A drag-and-drop table for Halo TCG, Hearthstone-style. It implements NO rules:
+  everything it can do comes from engine.js — legalMoves() says what is allowed,
+  apply() does it, view() says what this seat may see. Drag a hand card onto a
+  lit cell to play it; drag a ready unit onto an enemy unit or hero to attack;
+  drag a unit to an empty cell in your main step to Redeploy; click a unit for
+  its activated ability. Serve it (node serve.mjs) and open /table.html.
+-->
+<style>
+  :root {
+    --bg: #030a14; --felt: #071628; --felt-2: #0c2442; --line: #1e5a8c; --ink: #dff4ff; --ink-2: #7fb8de;
+    --you: #6fd6ff; --foe: #ff7a59; --gold: #f2c14e; --ok: #4fe0ff; --bad: #ff5a5a; --card: #0a1f38; --card-2: #123259;
+    --cyan: #5fd0ff; --bloom: 0 0 6px rgba(95,208,255,.75), 0 0 18px rgba(95,208,255,.35);
+    --chamfer: polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.35 system-ui, -apple-system, Segoe UI, sans-serif; }
+  header { display: flex; gap: 12px; align-items: center; padding: 8px 14px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  header h1 { font-size: 15px; margin: 0 8px 0 0; letter-spacing: .04em; }
+  header label { color: var(--ink-2); font-size: 12px; display: flex; gap: 6px; align-items: center; }
+  input, select, button { font: inherit; color: var(--ink); background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--ink-2); }
+  button.primary { background: #1f5f8b; border-color: #3c8cc4; }
+  button.warn { background: #6b3b1f; border-color: #b8693a; }
+  main { display: grid; grid-template-columns: 1fr 280px; gap: 12px; padding: 12px; }
+  #table { background: radial-gradient(ellipse at center, var(--felt-2), var(--felt)); border: 1px solid var(--line); border-radius: 14px; padding: 10px 14px; min-width: 0; }
+  .hero { display: flex; align-items: center; gap: 14px; padding: 8px 12px; border-radius: 10px; background: rgba(0,0,0,.25); border: 2px solid transparent; }
+  .hero .name { font-weight: 700; }
+  .hero.you .name { color: var(--you); } .hero.foe .name { color: var(--foe); }
+  .hero .life { font-size: 22px; font-weight: 800; min-width: 54px; text-align: center; padding: 2px 8px; border-radius: 8px; background: #3a1414; color: #ffd6d6; }
+  .hero .meta { color: var(--ink-2); font-size: 12px; }
+  .crystals { display: flex; gap: 3px; } .crystals i { width: 12px; height: 12px; border-radius: 3px; transform: rotate(45deg); background: #24425a; border: 1px solid #3c6d93; }
+  .crystals i.full { background: #3fa7ff; border-color: #9fd3ff; }
+  .hero.target { border-color: var(--bad); box-shadow: 0 0 14px rgba(255,90,90,.6); cursor: crosshair; }
+  .hero.dropover { background: rgba(255,90,90,.25); }
+  .hero.turn { box-shadow: inset 0 0 0 1px var(--gold); }
+  .board { display: grid; gap: 6px; margin: 6px 0; }
+  .row { display: grid; grid-template-columns: 54px repeat(var(--cols, 9), 1fr); gap: 6px; align-items: stretch; }
+  .row .rname { color: var(--ink-2); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; display: flex; align-items: center; justify-content: flex-end; padding-right: 4px; }
+  .cell { min-height: 92px; border-radius: 9px; border: 1px dashed rgba(159,179,192,.18); position: relative; }
+  .cell.lit { border: 2px solid var(--ok); background: rgba(91,209,138,.10); }
+  .cell.dropover { background: rgba(91,209,138,.30); }
+  .cell.lit.bonus { border-color: var(--gold); background: rgba(242,193,78,.14); }
+  .cell.lit.best { box-shadow: 0 0 14px rgba(242,193,78,.55); }
+  .cell .gain { position: absolute; top: 4px; right: 6px; color: var(--gold); font-weight: 800; font-size: 13px; pointer-events: none; }
+  .cell .gain.form { top: auto; bottom: 4px; left: 6px; right: 6px; font-size: 10px; text-align: center; }
+  .hcard.selected { outline: 2px solid var(--gold); outline-offset: 2px; }
+  .divider { height: 2px; background: linear-gradient(90deg, transparent, var(--gold), transparent); margin: 8px 0; opacity: .6; }
+  .unit, .hcard { position: relative; border-radius: 9px; background: linear-gradient(180deg, var(--card-2), var(--card)); border: 1px solid #3d5666; padding: 5px 6px 22px; height: 100%; min-height: 92px; font-size: 11px; user-select: none; }
+  .unit .t, .hcard .t { font-weight: 700; font-size: 12px; line-height: 1.15; }
+  .unit .kw, .hcard .kw { color: var(--gold); font-size: 10px; margin-top: 2px; }
+  .unit .tx, .hcard .tx { color: var(--ink-2); font-size: 10px; margin-top: 2px; max-height: 3.6em; overflow: hidden; }
+  .unit .st { color: var(--ink-2); font-size: 10px; font-style: italic; }
+  .stat { position: absolute; bottom: 3px; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font-weight: 800; font-size: 13px; }
+  .stat.a { left: 4px; background: #c08a1a; color: #1b1300; } .stat.h { right: 4px; background: #b3302e; color: #fff; }
+  .cost { position: absolute; top: -7px; left: -7px; width: 24px; height: 24px; border-radius: 50%; background: #2f7fd0; color: #fff; display: grid; place-items: center; font-weight: 800; border: 2px solid #9fd3ff; }
+  .unit.foe { border-color: #6a3a2c; } .unit.you { border-color: #2d5b7c; }
+  .unit.ready { box-shadow: 0 0 0 2px var(--ok), 0 0 14px rgba(91,209,138,.55); cursor: grab; }
+  .unit.movable { cursor: grab; }
+  .unit.target { box-shadow: 0 0 0 2px var(--bad), 0 0 12px rgba(255,90,90,.6); cursor: crosshair; }
+  .unit.dropover { background: #5a2626; }
+  .unit.choice { box-shadow: 0 0 0 2px var(--gold), 0 0 14px rgba(242,193,78,.6); cursor: pointer; }
+  .unit.attacking { outline: 3px solid var(--foe); } .unit.defending { outline: 3px dashed var(--gold); }
+  .unit.fresh::after { content: 'zZ'; position: absolute; top: 2px; right: 5px; color: var(--ink-2); font-size: 10px; }
+  .unit.hasact { cursor: pointer; } .unit.hasact::before { content: '⚡'; position: absolute; top: 2px; right: 18px; font-size: 11px; }
+  #hand { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; padding: 10px 4px 2px; min-height: 140px; }
+  .hcard { width: 118px; min-height: 132px; }
+  .hcard.playable { box-shadow: 0 0 0 2px var(--ok), 0 0 14px rgba(91,209,138,.5); cursor: grab; transform: translateY(-4px); }
+  .hcard.choice { box-shadow: 0 0 0 2px var(--gold), 0 0 14px rgba(242,193,78,.6); cursor: pointer; transform: translateY(-4px); }
+  .hcard.tactic { background: linear-gradient(180deg, #3a2d4b, #2a2238); border-color: #5d4a7a; }
+  .hcard .ty { color: var(--ink-2); font-size: 10px; }
+  .oppHand { display: flex; gap: 4px; justify-content: center; margin: 4px 0; }
+  .oppHand i { width: 26px; height: 36px; border-radius: 4px; background: repeating-linear-gradient(45deg, #3a2a24, #3a2a24 4px, #2b1f1a 4px, #2b1f1a 8px); border: 1px solid #6a3a2c; }
+  #bar { display: flex; gap: 8px; align-items: center; justify-content: space-between; margin: 8px 0 0; flex-wrap: wrap; }
+  #prompt { font-weight: 600; } #prompt .who { color: var(--gold); }
+  aside { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  .panel { background: var(--felt); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; }
+  .panel h2 { font-size: 12px; margin: 0 0 6px; color: var(--ink-2); text-transform: uppercase; letter-spacing: .06em; }
+  #log { max-height: 52vh; overflow: auto; font-size: 12px; } #log div { padding: 2px 0; border-bottom: 1px solid rgba(44,66,80,.5); }
+  #menu { position: fixed; z-index: 20; background: var(--card); border: 1px solid var(--ink-2); border-radius: 8px; padding: 6px; display: none; min-width: 220px; }
+  #menu button { display: block; width: 100%; text-align: left; margin: 3px 0; }
+  #cover { position: fixed; inset: 0; background: rgba(5,9,12,.92); display: none; place-items: center; z-index: 30; text-align: center; }
+  #cover .box { background: var(--felt); border: 1px solid var(--line); border-radius: 14px; padding: 24px 30px; }
+  #cover h2 { margin: 0 0 10px; }
+  #toast { position: fixed; left: 50%; top: 64px; transform: translateX(-50%); background: #102030; border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px; display: none; z-index: 25; max-width: 70vw; }
+  .err { color: var(--bad); }
+  @media (max-width: 1000px) { main { grid-template-columns: 1fr; } .cell, .unit { min-height: 76px; } }
+
+  /* ---- Halo 3 menu look: navy glass, cyan edges, bloom ------------------------------ */
+  body {
+    font-family: 'Rajdhani', 'Bahnschrift', 'Segoe UI', system-ui, sans-serif; font-weight: 500; letter-spacing: .02em;
+    background:
+      radial-gradient(ellipse 80% 60% at 50% 0%, rgba(40,120,200,.28), transparent 70%),
+      radial-gradient(ellipse 60% 50% at 50% 110%, rgba(20,80,160,.30), transparent 70%),
+      repeating-linear-gradient(0deg, rgba(95,208,255,.035) 0 1px, transparent 1px 3px),
+      var(--bg);
+    background-attachment: fixed;
+  }
+  header { background: linear-gradient(180deg, rgba(18,60,110,.65), rgba(6,22,42,.4)); border-bottom: 1px solid var(--cyan); box-shadow: 0 1px 14px rgba(95,208,255,.35); }
+  header h1 { color: var(--cyan); text-shadow: var(--bloom); letter-spacing: .22em; font-weight: 700; }
+  header label, .panel h2, .row .rname { text-transform: uppercase; letter-spacing: .12em; }
+  input, select, button { background: rgba(10,40,75,.75); border: 1px solid var(--line); border-radius: 0; color: var(--ink); clip-path: var(--chamfer); }
+  button { text-transform: uppercase; letter-spacing: .1em; font-weight: 600; transition: box-shadow .15s, border-color .15s, color .15s; }
+  button:hover { border-color: var(--cyan); color: #fff; box-shadow: inset 0 0 12px rgba(95,208,255,.45); text-shadow: var(--bloom); }
+  button.primary { background: linear-gradient(180deg, #1d6fb3, #0d3f72); border-color: var(--cyan); text-shadow: 0 0 6px rgba(95,208,255,.8); }
+  button.warn { background: linear-gradient(180deg, #7a4a1c, #4a2a10); border-color: #e09a4a; }
+  input[type=checkbox] { accent-color: var(--cyan); clip-path: none; }
+  #table { background: linear-gradient(180deg, rgba(12,40,74,.55), rgba(4,14,28,.75)); border: 1px solid var(--line); border-radius: 0; clip-path: var(--chamfer);
+    box-shadow: inset 0 0 40px rgba(40,140,230,.18); }
+  .panel { background: rgba(6,22,42,.72); border: 1px solid var(--line); border-radius: 0; clip-path: var(--chamfer); box-shadow: inset 0 0 18px rgba(40,140,230,.15); }
+  .panel h2 { color: var(--cyan); text-shadow: var(--bloom); border-bottom: 1px solid rgba(95,208,255,.3); padding-bottom: 4px; }
+  .hero { background: linear-gradient(90deg, rgba(14,50,92,.7), rgba(6,20,40,.4)); border-radius: 0; clip-path: var(--chamfer); }
+  .hero.you .name { color: var(--you); text-shadow: var(--bloom); }
+  .hero.foe .name { color: var(--foe); text-shadow: 0 0 6px rgba(255,122,89,.7); }
+  .hero .life { background: rgba(6,20,40,.9); color: #fff; border: 1px solid var(--cyan); border-radius: 0; text-shadow: var(--bloom); box-shadow: 0 0 10px rgba(95,208,255,.35); }
+  .hero.turn { box-shadow: inset 0 0 0 1px var(--cyan), 0 0 16px rgba(95,208,255,.35); }
+  .crystals i { background: #0b2a4c; border-color: #1e5a8c; }
+  .crystals i.full { background: var(--cyan); border-color: #d8f6ff; box-shadow: 0 0 6px rgba(95,208,255,.9); }
+  .divider { background: linear-gradient(90deg, transparent, var(--cyan), transparent); box-shadow: 0 0 10px rgba(95,208,255,.7); opacity: .85; }
+  .cell { border-radius: 0; border: 1px solid rgba(95,208,255,.14); background: rgba(8,30,56,.35); clip-path: var(--chamfer); }
+  .cell.lit { border: 2px solid var(--ok); background: rgba(79,224,255,.12); box-shadow: inset 0 0 14px rgba(79,224,255,.45); }
+  .cell.dropover { background: rgba(79,224,255,.32); }
+  .cell.lit.bonus { border-color: var(--gold); background: rgba(242,193,78,.14); box-shadow: inset 0 0 14px rgba(242,193,78,.5); }
+  .cell.lit.best { box-shadow: inset 0 0 20px rgba(242,193,78,.75); }
+  .cell .gain { text-shadow: 0 0 6px rgba(242,193,78,.9); }
+  .unit, .hcard { border-radius: 0; clip-path: var(--chamfer); background: linear-gradient(180deg, var(--card-2), var(--card)); border: 1px solid #2a6aa0; }
+  .unit .t, .hcard .t { color: #fff; text-shadow: 0 0 5px rgba(95,208,255,.6); text-transform: uppercase; letter-spacing: .04em; }
+  .unit.you { border-color: var(--cyan); } .unit.foe { border-color: #a0503a; background: linear-gradient(180deg, #3a1d1a, #1d0f10); }
+  /* clip-path cuts outer shadows, so glows are drawn inside the shape */
+  .unit.ready { box-shadow: inset 0 0 0 2px var(--ok), inset 0 0 16px rgba(79,224,255,.6); }
+  .unit.target, .hero.target { box-shadow: inset 0 0 0 2px var(--bad), inset 0 0 16px rgba(255,90,90,.6); }
+  .unit.choice, .hcard.choice { box-shadow: inset 0 0 0 2px var(--gold), inset 0 0 16px rgba(242,193,78,.6); }
+  .hcard.playable { box-shadow: inset 0 0 0 2px var(--ok), inset 0 0 16px rgba(79,224,255,.55); }
+  .hcard.selected { outline: none; box-shadow: inset 0 0 0 3px var(--gold), inset 0 0 18px rgba(242,193,78,.7); }
+  .hcard.tactic { background: linear-gradient(180deg, #2a2a5c, #141436); border-color: #7a7ae0; }
+  .cost { clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); border: none; border-radius: 0; width: 26px; height: 26px; top: 2px; left: 2px;
+    background: radial-gradient(circle, #9fe6ff, #1d7fd0 70%); color: #04203a; }
+  .hcard .t { padding-left: 26px; min-height: 26px; }
+  .stat { border-radius: 0; clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%); }
+  .stat.a { background: linear-gradient(180deg, #ffd36a, #c08a1a); } .stat.h { background: linear-gradient(180deg, #ff6a6a, #a8201e); }
+  #prompt { color: var(--cyan); text-shadow: var(--bloom); text-transform: uppercase; letter-spacing: .06em; }
+  #log div { border-bottom-color: rgba(95,208,255,.12); }
+  #menu, #toast, #cover .box { border-radius: 0; background: rgba(6,22,42,.96); border: 1px solid var(--cyan); box-shadow: 0 0 22px rgba(95,208,255,.4); }
+  #cover h2 { color: var(--cyan); text-shadow: var(--bloom); text-transform: uppercase; letter-spacing: .14em; }
+  #cover { background: radial-gradient(ellipse at center, rgba(10,40,80,.85), rgba(2,6,12,.96)); }
+  /* faction body, unit-kind band */
+  .unit, .hcard, .unit.foe {
+    background:
+      linear-gradient(var(--kind), var(--kind)) top / 100% 4px no-repeat,
+      linear-gradient(180deg, color-mix(in srgb, var(--fac), white 14%), color-mix(in srgb, var(--fac), black 50%));
+  }
+  .hcard.tactic {
+    background:
+      linear-gradient(var(--kind), var(--kind)) top / 100% 4px no-repeat,
+      repeating-linear-gradient(135deg, rgba(255,255,255,.05) 0 6px, transparent 6px 12px),
+      linear-gradient(180deg, color-mix(in srgb, var(--fac), white 8%), color-mix(in srgb, var(--fac), black 55%));
+  }
+  .unit.foe { border-color: #d0603e; }
+  .unit .kind { color: var(--kind); font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .12em; margin-top: 1px; text-shadow: 0 0 6px color-mix(in srgb, var(--kind), transparent 40%); }
+  .hcard .ty .kchip { color: var(--kind); font-weight: 700; text-transform: uppercase; letter-spacing: .1em; text-shadow: 0 0 6px color-mix(in srgb, var(--kind), transparent 40%); }
+
+  /* select, grab, drag */
+  .hcard { transition: transform .18s cubic-bezier(.2,.8,.3,1.3), filter .18s; }
+  .hcard.playable:hover { transform: translateY(-12px) scale(1.04); filter: brightness(1.15); }
+  .hcard.selected { transform: translateY(-18px) scale(1.08); animation: sel-pulse 1.1s ease-in-out infinite; }
+  @keyframes sel-pulse { 0%, 100% { filter: brightness(1.05); } 50% { filter: brightness(1.35) drop-shadow(0 0 6px rgba(242,193,78,.8)); } }
+  .unit { transition: transform .15s, filter .15s; }
+  .unit.ready:hover, .unit.movable:hover { transform: scale(1.05); filter: brightness(1.2); }
+  .grabbing { opacity: .3 !important; transform: scale(.92) !important; filter: grayscale(.5) !important; transition: none; }
+  .dragghost { position: fixed; top: -1000px; left: -1000px; transform: rotate(-5deg) scale(1.06); filter: brightness(1.25) drop-shadow(0 0 10px rgba(95,208,255,.9)); }
+  .cell.lit { animation: lit-pulse .9s ease-in-out infinite alternate; }
+  @keyframes lit-pulse { from { filter: brightness(1); } to { filter: brightness(1.45); } }
+  .cell.dropover { animation: none; filter: brightness(1.7); }
+  .unit.enter { animation: drop-in .38s cubic-bezier(.2,.9,.3,1.4); }
+  @keyframes drop-in { 0% { transform: scale(1.5) translateY(-14px); opacity: 0; filter: brightness(2.5); } 60% { opacity: 1; } 100% { transform: none; filter: none; } }
+  .lunge { position: fixed; z-index: 38; pointer-events: none; margin: 0; }
+
+  /* damage numbers */
+  .fx { position: fixed; z-index: 40; pointer-events: none; font-weight: 800; font-size: 30px; transform: translate(-50%, -50%);
+    animation: fx-rise 1.25s ease-out forwards; white-space: nowrap; letter-spacing: .02em; }
+  .fx.dmg { color: #ff5a4a; text-shadow: 0 0 6px rgba(255,70,50,.95), 0 0 18px rgba(255,70,50,.55), 0 2px 0 #3a0000; }
+  .fx.shield { color: #9fe8ff; font-size: 24px; text-shadow: 0 0 6px rgba(95,208,255,.95), 0 0 18px rgba(95,208,255,.6); }
+  .hero .shieldbar { width: 120px; }
+  .hero .shieldbar .lbl { font-size: 11px; color: var(--cyan); text-transform: uppercase; letter-spacing: .12em; text-shadow: var(--bloom); }
+  .hero .shieldbar .track { height: 8px; background: rgba(10,40,75,.9); border: 1px solid var(--line); margin-top: 2px; }
+  .hero .shieldbar .fill { height: 100%; background: linear-gradient(90deg, #2fa8ff, #9fe8ff); box-shadow: 0 0 8px rgba(95,208,255,.9); transition: width .35s; }
+  .hero .shieldbar.down .lbl { color: #ff9a7a; text-shadow: 0 0 6px rgba(255,90,60,.8); }
+  .fx.heal { color: #6dffb0; text-shadow: 0 0 6px rgba(80,255,160,.9), 0 0 18px rgba(80,255,160,.5); }
+  .fx.kill { font-size: 13px; letter-spacing: .2em; color: #ffd0c8; margin-top: 26px; text-shadow: 0 0 8px rgba(255,70,50,.9); }
+  .fx.big { font-size: 40px; }
+  @keyframes fx-rise { 0% { opacity: 0; transform: translate(-50%, -30%) scale(.6); } 12% { opacity: 1; transform: translate(-50%, -50%) scale(1.25); }
+    25% { transform: translate(-50%, -55%) scale(1); } 100% { opacity: 0; transform: translate(-50%, -160%) scale(1); } }
+  .burst { position: fixed; z-index: 39; pointer-events: none; width: 90px; height: 90px; transform: translate(-50%, -50%); border-radius: 50%;
+    background: radial-gradient(circle, rgba(255,220,180,.95), rgba(255,90,40,.6) 35%, transparent 70%); animation: burst .6s ease-out forwards; }
+  @keyframes burst { from { opacity: 1; transform: translate(-50%, -50%) scale(.3); } to { opacity: 0; transform: translate(-50%, -50%) scale(1.6); } }
+  .unit.hit, .hero.hit { animation: hit .4s ease-out; }
+  @keyframes hit { 0%, 100% { translate: 0 0; filter: none; } 15% { translate: -5px 0; filter: brightness(2) saturate(2) hue-rotate(-30deg); } 35% { translate: 5px 0; } 55% { translate: -3px 0; } 75% { translate: 2px 0; } }
+  .oppHand i { border-radius: 0; background: repeating-linear-gradient(45deg, #2a1410, #2a1410 4px, #1a0c0a 4px, #1a0c0a 8px); }
+</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+<header>
+  <h1>HALO TCG — TABLE</h1>
+  <label>Seed <input id="seed" type="number" value="1" style="width:90px"></label>
+  <label>You play <select id="human"><option value="0">Player 1</option><option value="1">Player 2</option><option value="both">Both seats (hotseat)</option></select></label>
+  <label title="Gold cells give the card a bonus there; the number is the Attack + Health it adds across your board"><input id="hints" type="checkbox" checked> Placement hints</label>
+  <label title="When you are attacked and have nothing that can block, or no Tactic you can afford, decline for you instead of waiting for a click"><input id="autopass" type="checkbox" checked> Auto-pass forced moves</label>
+  <button id="new">New game</button>
+  <button id="download">Download session</button>
+  <span id="match" style="color:var(--ink-2);font-size:12px"></span>
+  <span id="roomInfo" style="color:var(--gold);font-size:12px;display:none"></span>
+  <span id="netStatus" style="color:var(--foe);font-size:12px;display:none"></span>
+</header>
+<main>
+  <section id="table">
+    <div id="foeHero"></div>
+    <div class="oppHand" id="oppHand"></div>
+    <div class="board" id="foeBoard"></div>
+    <div class="divider"></div>
+    <div class="board" id="youBoard"></div>
+    <div id="youHero"></div>
+    <div id="hand"></div>
+    <div id="bar"><div id="prompt"></div><div id="buttons"></div></div>
+  </section>
+  <aside>
+    <div class="panel"><h2>How to play</h2>
+      <div style="font-size:12px;color:var(--ink-2)">
+        Drag a <b>glowing hand card</b> onto a green cell to play it, or click it and then click a cell.
+        <b>Gold</b> cells give it a bonus there (+N = Attack + Health it adds to your board).<br>
+        In combat, drag a <b>glowing unit</b> onto a red-outlined enemy unit or hero to attack.<br>
+        In your main step, drag a Redeploy unit to an empty cell; click a ⚡ unit to activate it.<br>
+        When attacked: click a gold blocker (or No block), then a gold Tactic (or No response).<br>
+        <b>zZ</b> = placed this turn. Front zone blocks; side zone flanks.
+      </div></div>
+    <div class="panel"><h2>Log</h2><div id="log"></div></div>
+  </aside>
+</main>
+<div id="menu"></div>
+<div id="toast"></div>
+<div id="cover"><div class="box"><h2 id="coverTitle"></h2><p id="coverText"></p><div id="coverBtns"></div></div></div>
+
+<script type="module">
+import * as E from './engine.js';
+import { MATCH } from './match.js';
+import { openRoom, keepRecord } from './net.js';
+let POLICIES = {};
+try { POLICIES = (await import('./policies.js')).POLICIES ?? {}; } catch { /* hotseat only */ }
+const policy = Object.values(POLICIES)[0] ?? null;
+
+// Online play: opened as table.html?room=CODE from the lobby. The room checks every move with
+// this same engine and relays it; this page replays the moves on its own copy.
+const PARAMS = new URLSearchParams(location.search);
+const ROOM = PARAMS.get('room')?.toUpperCase() || null;
+// Against the bot: opened as table.html?deck=YOURS&vs=BOTS from the lobby. Without them it
+// deals match.js, the pairing the designer set for the play client.
+const SOLO = PARAMS.get('deck') && PARAMS.get('vs') ? [PARAMS.get('deck'), PARAMS.get('vs')] : null;
+const LOCAL_MATCH = SOLO ?? MATCH;
+const LOCAL_NAMES = SOLO ? [PARAMS.get('name') || 'You', 'Bot'] : null;
+let online = null;   // { code, net, room }
+
+// ---- faction and unit-kind colours (presentation only) --------------------------------
+// Covenant prints its castes as subtypes; the other factions' kinds are read off the card's
+// name, which is a display grouping and nothing the rules use.
+const FACTION = {
+  Covenant: { tint: '#3b1c5e', short: 'COV' }, Flood: { tint: '#4d3a16', short: 'FLD' },
+  'Human/UNSC': { tint: '#26381f', short: 'UNSC' }, Forerunner: { tint: '#163f47', short: 'FRN' }, Neutral: { tint: '#2a3038', short: 'NTR' },
+};
+const KIND = {
+  Grunt: '#ff9a3c', Jackal: '#4fc3ff', Elite: '#b77bff', Hunter: '#3fd08f', Brute: '#d0583e', Prophet: '#ffd75a', Turret: '#9fb0c4',
+  Infection: '#e8d46a', Combat: '#d0904a', Carrier: '#b5c64e', Pure: '#ff6a4a', Gravemind: '#c0508a',
+  Infantry: '#9bcf62', Spartan: '#3fe07a', Command: '#f0c860',
+  Sentinel: '#9ad8ff', Monitor: '#5fffe0', Constructor: '#d8e4f0', Structure: '#7fa0bf',
+  Vehicle: '#c9b48a', Gear: '#b0b8c0', Tactic: '#e070ff',
+};
+function kindOf(c) {
+  if (c.type === 'Tactic') return 'Tactic';
+  if (c.subtype && c.subtype !== 'Vehicle') return c.subtype;
+  if (c.subtype === 'Vehicle' || /Heavy Armor|Keyship|Dreadnought/.test(c.title)) return 'Vehicle';
+  const t = c.title;
+  switch (c.faction) {
+    case 'Flood':
+      if (/Gravemind|Proto-|Tendril/.test(t)) return 'Gravemind';
+      if (/Carrier|Pod|Spore Host/.test(t)) return 'Carrier';
+      if (/Ranged|Stalker|Pure|Tank Form/.test(t)) return 'Pure';
+      if (/Combat|Infected|Juggernaut/.test(t)) return 'Combat';
+      return 'Infection';
+    case 'Human/UNSC':
+      if (/Spartan|Master Chief|Noble Six/.test(t)) return 'Spartan';
+      if (/Sergeant|Johnson|Keyes|Hood|Commander|Cortana|ONI/.test(t)) return 'Command';
+      return 'Infantry';
+    case 'Forerunner':
+      if (/Monitor|343|Mendicant|Index|Archivist|Cartographer|Library|Archive/.test(t)) return 'Monitor';
+      if (/Construct|Foundry/.test(t)) return 'Constructor';
+      if (/Sentinel|Drone|Lancer|Enforcer|Phalanx/.test(t)) return 'Sentinel';
+      return 'Structure';
+    default: return 'Gear';
+  }
+}
+const cardStyle = (c) => { const f = FACTION[c.faction] ?? FACTION.Neutral, k = kindOf(c); return { k, short: f.short, style: `--fac:${f.tint};--kind:${KIND[k] ?? '#9fb0c4'}` }; };
+
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const KEY = 'halo-table-game';
+
+let session = null;   // { seed, human, match, intents: [{seat,id,ms}] }
+let state = null;
+let shownSeat = 0;    // whose eyes the table is drawn for
+let botTimer = null;
+let turnStarted = performance.now();
+
+const humanSeats = () => (session.human === 'both' ? [0, 1] : [+session.human]);
+const isHuman = (seat) => humanSeats().includes(seat);
+const activeSeat = () => [0, 1].find((s) => E.legalMoves(state, s).length) ?? null;
+
+// A bot game is kept apart from the designer's match.js table, so opening one does not end the other.
+const GAME_KEY = () => (SOLO ? KEY + '-bot' : KEY);
+function save() { if (online) return; try { localStorage.setItem(GAME_KEY(), JSON.stringify(session)); } catch { /* private window */ } }
+
+function start(seed, human, intents = [], { firstPlayer = 0, match = LOCAL_MATCH, names = LOCAL_NAMES } = {}) {
+  session = { seed, human, match: [...match], firstPlayer, names, hints: $('#hints').checked, intents: [] };
+  state = E.newGame({ seed, firstPlayer, match, names });
+  let dropped = 0;
+  for (const it of intents) {
+    const r = E.apply(state, { seat: it.seat, id: it.id });
+    if (!r.ok) { dropped = intents.length - session.intents.length; break; }
+    state = r.state; session.intents.push(it);
+  }
+  if (dropped) toast(`Resumed, but ${dropped} saved move(s) no longer apply (the rules or decks changed).`);
+  shownSeat = isHuman(activeSeat() ?? 0) ? (activeSeat() ?? 0) : humanSeats()[0];
+  save(); render(); schedule();
+}
+
+// ---- damage numbers: diff the public board before and after each move -----------------
+// Works for every source (attacks, Tactics, Glory, start-of-turn effects, the bot) because
+// it reads only what changed, not why.
+let pendingFx = [];
+function snapshot() {
+  const t = E.view(state, shownSeat).table;
+  const units = new Map();
+  t.boards.forEach((b, seat) => b.forEach((u) => units.set(u.id, { seat, r: u.r, c: u.c, health: u.health })));
+  return { units, life: t.heroes.map((h) => h.life), shield: t.heroes.map((h) => h.shield), pending: t.pending };
+}
+// The attacking card, captured from the board as drawn now (it may not survive the attack).
+function grab(unitId) {
+  const el = document.querySelector(`[data-unit="${unitId}"]`);
+  return el ? { html: el.outerHTML, rect: el.getBoundingClientRect() } : null;
+}
+function diffFx(before, after, src) {
+  const fx = [];
+  // An attack resolving: the attacker strikes whichever defender lost health, else its target.
+  if (before.pending && !after.pending && src) {
+    const hit = [...before.units].find(([id, u]) => u.seat !== before.units.get(before.pending.attacker)?.seat && (!after.units.get(id) || after.units.get(id).health < u.health));
+    const tgt = hit ? hit[1] : before.pending.target === 'hero' ? null : before.units.get(before.pending.target);
+    const atkSeat = before.units.get(before.pending.attacker)?.seat;
+    fx.push({ kind: 'lunge', src, to: tgt ? { seat: tgt.seat, r: tgt.r, c: tgt.c } : { hero: 1 - atkSeat } });
+  }
+  for (const [id] of after.units) if (!before.units.has(id)) fx.push({ kind: 'enter', unit: id });
+  for (const [id, u] of before.units) {
+    const now = after.units.get(id);
+    if (!now) fx.push({ kind: 'kill', seat: u.seat, r: u.r, c: u.c, n: u.health });
+    else if (now.health < u.health) fx.push({ kind: 'dmg', unit: id, seat: now.seat, r: now.r, c: now.c, n: u.health - now.health });
+  }
+  before.shield.forEach((s, seat) => { const d = s - after.shield[seat]; if (d > 0) fx.push({ kind: 'shield', hero: seat, n: d }); });
+  before.life.forEach((l, seat) => { const d = after.life[seat] - l; if (d) fx.push({ kind: d < 0 ? 'dmg' : 'heal', hero: seat, n: Math.abs(d) }); });
+  return fx;
+}
+function lunge(f) {
+  const to = f.to.hero != null ? $(`#hero${f.to.hero} .life`) : document.querySelector(`.cell[data-seat="${f.to.seat}"][data-r="${f.to.r}"][data-c="${f.to.c}"]`);
+  if (!to) return;
+  const a = f.src.rect, b = to.getBoundingClientRect();
+  const wrap = document.createElement('div'); wrap.innerHTML = f.src.html;
+  const ghost = wrap.firstElementChild; ghost.classList.add('lunge'); ghost.classList.remove('ready', 'attacking', 'hit');
+  Object.assign(ghost.style, { left: `${a.left}px`, top: `${a.top}px`, width: `${a.width}px`, height: `${a.height}px` });
+  document.body.appendChild(ghost);
+  const dx = (b.left + b.width / 2) - (a.left + a.width / 2), dy = (b.top + b.height / 2) - (a.top + a.height / 2);
+  ghost.animate([
+    { transform: 'translate(0,0) scale(1)', filter: 'brightness(1)' },
+    { transform: `translate(${-dx * 0.08}px, ${-dy * 0.08}px) scale(1.08) rotate(-3deg)`, filter: 'brightness(1.4)', offset: 0.3 },
+    { transform: `translate(${dx * 0.85}px, ${dy * 0.85}px) scale(1.12)`, filter: 'brightness(2)', offset: 0.55 },
+    { transform: 'translate(0,0) scale(1)', filter: 'brightness(1)' },
+  ], { duration: 560, easing: 'cubic-bezier(.4,0,.2,1)' }).onfinish = () => ghost.remove();
+}
+function playFx() {
+  const fx = pendingFx; pendingFx = [];
+  const hit = fx.find((f) => f.kind === 'lunge');
+  if (hit) lunge(hit);
+  const delay = hit ? 300 : 0;
+  fx.filter((f) => f.kind === 'enter').forEach((f) => document.querySelector(`[data-unit="${f.unit}"]`)?.classList.add('enter'));
+  fx.filter((f) => f.kind !== 'lunge' && f.kind !== 'enter').forEach((f, k) => setTimeout(() => {
+    const el = f.hero != null ? $(`#hero${f.hero} ${f.kind === 'shield' ? '.shieldbar' : '.life'}`) : document.querySelector(`.cell[data-seat="${f.seat}"][data-r="${f.r}"][data-c="${f.c}"]`);
+    if (!el) return;
+    const b = el.getBoundingClientRect(), x = b.left + b.width / 2, y = b.top + b.height / 2;
+    const add = (cls, html) => { const d = document.createElement('div'); d.className = cls; d.innerHTML = html; d.style.left = `${x}px`; d.style.top = `${y}px`; document.body.appendChild(d); setTimeout(() => d.remove(), 1400); };
+    if (f.kind === 'kill') { add('burst', ''); add('fx dmg', `−${f.n}`); add('fx kill', 'DESTROYED'); return; }
+    add(`fx ${f.kind}${f.n >= 5 && f.kind !== 'shield' ? ' big' : ''}`, `${f.kind === 'heal' ? '+' : '−'}${f.n}`);
+    const shake = f.hero != null ? $(`#hero${f.hero}`) : document.querySelector(`[data-unit="${f.unit}"]`);
+    if (shake && f.kind === 'dmg') { shake.classList.remove('hit'); void shake.offsetWidth; shake.classList.add('hit'); }
+  }, delay + k * 90));
+}
+
+// A decision with one legal move that only declines — no blocker, or no affordable Tactic — is not a choice.
+const autoPassOn = () => $('#autopass').checked;
+function forcedPass(seat) {
+  const legal = E.legalMoves(state, seat);
+  return legal.length === 1 && (legal[0].id === 'noblock' || legal[0].id === 'pass') ? legal[0] : null;
+}
+
+function submit(seat, id, { remote = false } = {}) {
+  const before = snapshot();
+  const src = before.pending ? grab(before.pending.attacker) : null;
+  const r = E.apply(state, { seat, id });
+  if (!r.ok) { toast(`Refused: ${r.reason}`, true); return; }
+  pendingFx.push(...diffFx(before, (() => { const s = state; state = r.state; const a = snapshot(); state = s; return a; })(), src));
+  const ms = Math.round(performance.now() - turnStarted);
+  session.intents.push({ seat, id, ms });
+  turnStarted = performance.now();
+  if (online && !remote) sendMove(id, session.intents.length - 1, ms);
+  state = r.state; save();
+  const next = activeSeat();
+  if (session.human === 'both' && next != null && next !== shownSeat && !state.over && !(autoPassOn() && forcedPass(next))) handover(next);
+  else render();
+  schedule();
+}
+
+function schedule() {
+  clearTimeout(botTimer);
+  const forced = !state.over && activeSeat() != null && isHuman(activeSeat()) && autoPassOn() ? forcedPass(activeSeat()) : null;
+  if (forced) {
+    const seat = activeSeat();
+    botTimer = setTimeout(() => { toast(forced.id === 'noblock' ? 'Nothing can block — passed.' : 'No Tactic to play — passed.'); submit(seat, forced.id); }, 500);
+    return;
+  }
+  if (online) return;   // the other seat is a person on another machine
+  const seat = activeSeat();
+  if (state.over || seat == null || isHuman(seat) || !policy) return;
+  botTimer = setTimeout(() => {
+    const legal = E.legalMoves(state, seat);
+    const m = policy(legal, state, seat) ?? legal[0];
+    submit(seat, m.id);
+  }, 550);
+}
+
+function handover(seat) {
+  shownSeat = seat;
+  cover(`Pass to ${state.P[seat].name.split(' — ')[0]}`, 'The other player looks away.', [['Ready', () => { hideCover(); render(); }]]);
+}
+
+// ---- drawing ------------------------------------------------------------------
+function render() {
+  hideMenu();
+  const v = E.view(state, shownSeat), t = v.table, me = shownSeat, foe = 1 - me;
+  const myTurn = activeSeat() === me && !state.over;
+  const legal = myTurn ? E.legalMoves(state, me, { cells: true }) : [];
+  const usesCard = (cid) => legal.filter((m) => (m.cards || []).includes(cid));
+  $('#match').textContent = `${t.heroes[0].name}  vs  ${t.heroes[1].name}`;
+
+  // heroes
+  const heroHtml = (h, side) => `
+    <div class="hero ${side} ${t.active === h.seat ? 'turn' : ''}" id="hero${h.seat}" data-hero="${h.seat}">
+      <div class="life">${h.life}</div>
+      <div class="shieldbar ${h.shield ? '' : 'down'}" title="Shield: soaks hero damage, recharges to full at the start of this hero's turn"><div class="lbl">${h.shield ? `Shield ${h.shield}/${h.shieldMax}` : 'Shield down'}</div><div class="track"><div class="fill" style="width:${h.shieldMax ? (100 * h.shield / h.shieldMax) : 0}%"></div></div></div>
+      <div><div class="name">${esc(h.name)}${t.cur === h.seat ? ' — turn ' + t.turn : ''}</div>
+        <div class="meta">Hand ${h.hand} · Deck ${h.deck}${h.skipping ? ' · skipping (+2 next turn)' : ''}</div></div>
+      <div class="crystals" title="${h.res} of ${h.max} resource">${Array.from({ length: Math.max(h.max, 1) }, (_, k) => `<i class="${k < h.res ? 'full' : ''}"></i>`).join('')}</div>
+      <div class="meta">${h.res}/${h.max}</div>
+    </div>`;
+  $('#foeHero').innerHTML = heroHtml(t.heroes[foe], 'foe');
+  $('#youHero').innerHTML = heroHtml(t.heroes[me], 'you');
+  $('#oppHand').innerHTML = Array.from({ length: t.heroes[foe].hand }, () => '<i></i>').join('');
+
+  // boards: the opponent's front row sits nearest the middle, as does yours
+  const unitHtml = (u, side) => {
+    const acts = side === 'you' ? usesCard(u.id) : [];
+    const cls = ['unit', side, u.fresh ? 'fresh' : '', u.ready && acts.some((m) => m.id.startsWith('atk:')) ? 'ready' : '',
+      acts.some((m) => m.id.startsWith('move:')) ? 'movable' : '', acts.some((m) => m.id.startsWith('act:')) ? 'hasact' : '',
+      t.pending?.attacker === u.id ? 'attacking' : '', t.pending?.target === u.id ? 'defending' : ''].filter(Boolean).join(' ');
+    const cs = cardStyle(u);
+    return `<div class="${cls}" style="${cs.style}" data-unit="${u.id}" draggable="${acts.some((m) => /^(atk|move):/.test(m.id))}" title="${esc(u.title + (u.text ? ' — ' + u.text : ''))}">
+      <div class="kind">${esc(cs.k)}</div>
+      <div class="t">${esc(u.title)}</div>
+      ${u.keywords.length ? `<div class="kw">${esc(u.keywords.join(' · '))}</div>` : ''}
+      ${u.text ? `<div class="tx">${esc(u.text)}</div>` : ''}
+      ${u.status && u.status !== u.text ? `<div class="st">${esc(u.status)}</div>` : ''}
+      <div class="stat a">${u.attack}</div><div class="stat h">${u.health}</div></div>`;
+  };
+  const boardHtml = (seat, side) => {
+    const order = side === 'foe' ? [2, 1, 0] : [0, 1, 2];
+    return order.map((r) => `<div class="row"><div class="rname">${t.rowNames[r]}</div>${Array.from({ length: t.cols }, (_, c) => {
+      const u = t.boards[seat].find((x) => x.r === r && x.c === c);
+      return `<div class="cell" data-seat="${seat}" data-r="${r}" data-c="${c}">${u ? unitHtml(u, side) : ''}</div>`;
+    }).join('')}</div>`).join('');
+  };
+  $('#foeBoard').innerHTML = boardHtml(foe, 'foe');
+  $('#youBoard').innerHTML = boardHtml(me, 'you');
+  document.querySelectorAll('.board').forEach((b) => b.style.setProperty('--cols', t.cols));
+
+  // hand
+  $('#hand').innerHTML = t.hand.map((c) => {
+    const acts = usesCard(c.id);
+    const playable = acts.some((m) => m.id.startsWith('play:'));
+    const choice = acts.some((m) => m.id.startsWith('resp:'));
+    const [a, h] = (c.stats || '').split('/');
+    const cs = cardStyle(c);
+    return `<div class="hcard ${c.type === 'Tactic' ? 'tactic' : ''} ${playable ? 'playable' : ''} ${choice ? 'choice' : ''}" style="${cs.style}" data-hand="${c.id}" draggable="${playable}" title="${esc(c.title + (c.text ? ' — ' + c.text : ''))}">
+      <div class="cost">${c.cost}</div>
+      <div class="t">${esc(c.title)}</div>
+      <div class="ty"><span class="kchip">${esc(cs.k)}</span> ${esc(cs.short)}</div>
+      ${c.keywords.length ? `<div class="kw">${esc(c.keywords.join(' · '))}</div>` : ''}
+      ${c.text ? `<div class="tx">${esc(c.text)}</div>` : ''}
+      ${c.stats ? `<div class="stat a">${a}</div><div class="stat h">${h}</div>` : ''}</div>`;
+  }).join('') || '<div style="color:var(--ink-2)">Your hand is empty.</div>';
+
+  // choices the defender makes by clicking
+  for (const m of legal) {
+    if (m.id.startsWith('block:')) document.querySelector(`[data-unit="u${m.id.split(':')[1]}"]`)?.classList.add('choice');
+  }
+
+  // prompt and buttons: every move that names no card
+  const who = state.P[t.active]?.name.split(' — ')[0];
+  const prompts = {
+    main: 'Main step — drag cards onto your board, Redeploy, activate ⚡ units.',
+    combat: 'Combat — drag a glowing unit onto an enemy unit or the enemy hero.',
+    block: 'You are attacked — click a gold front-zone unit to block, or don\'t block.',
+    respond: 'Response window — click a gold Tactic to play it, or pass.',
+  };
+  $('#prompt').innerHTML = state.over ? `<span class="who">${esc(state.P[state.winner].name)}</span> wins.`
+    : myTurn ? prompts[t.phase] : `<span class="who">${esc(who)}</span> is thinking…`;
+  const plain = legal.filter((m) => !(m.cards || []).length);
+  $('#buttons').innerHTML = plain.map((m) => `<button class="${m.id === 'end' || m.id === 'combat' || m.id === 'pass' ? 'primary' : m.id === 'skip' ? 'warn' : ''}" data-move="${esc(m.id)}">${esc(m.label)}</button>`).join(' ');
+
+  $('#log').innerHTML = state.log.slice(-80).map((l) => `<div>${esc(l)}</div>`).reverse().join('');
+  if (state.over && online) cover(`${state.P[state.winner].name} wins`, `Turn ${state.turn}. ${session.intents.length} moves. A record of the game is kept in this browser.`, [['Rematch', rematch], ['Download session', download], ['Back to lobby', () => { location.href = lobbyUrl(); }]]);
+  else if (state.over) cover(`${state.P[state.winner].name} wins`, `Turn ${state.turn}. ${session.intents.length} moves.`, [['Download session', download], ['New game', () => { hideCover(); start(+$('#seed').value + 1, session.human); $('#seed').value = session.seed; }], ...(SOLO ? [['Back to lobby', () => { location.href = lobbyUrl(); }]] : [])]);
+  wire(legal);
+  playFx();
+}
+
+// ---- input: drag to play, attack and Redeploy; click to activate, block, respond --------
+function wire(legal) {
+  const me = shownSeat;
+  const cellAt = (r, c) => document.querySelector(`.cell[data-seat="${me}"][data-r="${r}"][data-c="${c}"]`);
+  // Light the legal cells for a card, and with hints on, mark in gold the ones where the
+  // engine says it gains something (placementHints tries it in each cell).
+  const lightCells = (ids, card) => {
+    for (const id of ids) {
+      const [, , r, c] = id.split(':');
+      const cell = cellAt(r, c);
+      if (cell) { cell.classList.add('lit'); cell.dataset.move = id; }
+    }
+    if (!card || !$('#hints').checked) return;
+    for (const h of E.placementHints(state, me, card)) {
+      const cell = cellAt(h.r, h.c);
+      if (!cell?.classList.contains('lit') || (!h.gain && !h.formation)) continue;
+      cell.classList.add('bonus'); if (h.best) cell.classList.add('best');
+      if (h.gain) cell.insertAdjacentHTML('beforeend', `<span class="gain">+${h.gain}</span>`);
+      if (h.formation) cell.insertAdjacentHTML('beforeend', `<span class="gain form">${h.glory ? 'Completes formation · Glory' : 'Completes formation'}</span>`);
+      cell.title = `Placing here adds ${h.gain} Attack + Health across your board${h.formation ? ' and completes the formation' : ''}.`;
+    }
+  };
+  const clearLit = () => {
+    document.querySelectorAll('.lit,.target,.dropover,.selected').forEach((el) => { el.classList.remove('lit', 'target', 'dropover', 'bonus', 'best', 'selected'); delete el.dataset.move; if (el.classList.contains('cell')) el.removeAttribute('title'); });
+    document.querySelectorAll('.cell .gain').forEach((el) => el.remove());
+  };
+  // Picking a card up: a tilted, glowing copy follows the pointer and the original dims.
+  const lift = (e, el) => {
+    const g = el.cloneNode(true); g.classList.add('dragghost'); g.classList.remove('selected');
+    const b = el.getBoundingClientRect(); g.style.width = `${b.width}px`; g.style.height = `${b.height}px`;
+    document.body.appendChild(g);
+    e.dataTransfer.setDragImage(g, b.width / 2, b.height / 2);
+    requestAnimationFrame(() => { el.classList.add('grabbing'); setTimeout(() => g.remove(), 0); });
+    el.addEventListener('dragend', () => el.classList.remove('grabbing'), { once: true });
+  };
+  const playIds = (card) => legal.filter((m) => m.id.startsWith('play:') && m.cards.includes(card)).map((m) => m.id);
+
+  document.querySelectorAll('.hcard[draggable="true"]').forEach((el) => {
+    el.addEventListener('dragstart', (e) => {
+      e.dataTransfer.setData('text/plain', el.dataset.hand);
+      clearLit(); lift(e, el); lightCells(playIds(el.dataset.hand), el.dataset.hand);
+    });
+    el.addEventListener('dragend', clearLit);
+    // Click to select: the same lit cells and hints, then click a cell to play there.
+    el.addEventListener('click', () => {
+      const was = el.classList.contains('selected');
+      clearLit(); if (was) return;
+      el.classList.add('selected'); lightCells(playIds(el.dataset.hand), el.dataset.hand);
+    });
+  });
+  document.querySelectorAll(`.cell[data-seat="${me}"]`).forEach((cell) => {
+    cell.addEventListener('click', () => { if (cell.classList.contains('lit') && cell.dataset.move) { const id = cell.dataset.move; clearLit(); submit(me, id); } });
+  });
+  document.querySelectorAll('.unit.you[draggable="true"]').forEach((el) => {
+    el.addEventListener('dragstart', (e) => {
+      e.dataTransfer.setData('text/plain', el.dataset.unit);
+      lift(e, el);
+      const mine = legal.filter((m) => m.cards?.[0] === el.dataset.unit);
+      lightCells(mine.filter((m) => m.id.startsWith('move:')).map((m) => m.id), el.dataset.unit);
+      for (const m of mine.filter((x) => x.id.startsWith('atk:'))) {
+        const tgt = m.id.split(':')[2];
+        const node = tgt === 'hero' ? $(`#hero${1 - me}`) : document.querySelector(`[data-unit="u${tgt}"]`);
+        if (node) { node.classList.add('target'); node.dataset.move = m.id; }
+      }
+    });
+    el.addEventListener('dragend', clearLit);
+  });
+  document.ondragover = (e) => {
+    const t = e.target.closest('.cell.lit, .target');
+    document.querySelectorAll('.dropover').forEach((x) => x.classList.remove('dropover'));
+    if (t) { e.preventDefault(); t.classList.add('dropover'); }
+  };
+  document.ondrop = (e) => {
+    const t = e.target.closest('.cell.lit, .target');
+    if (!t?.dataset.move) return;
+    e.preventDefault();
+    const id = t.dataset.move; clearLit(); submit(me, id);
+  };
+
+  document.querySelectorAll('[data-move]').forEach((b) => { if (b.tagName === 'BUTTON') b.onclick = () => submit(me, b.dataset.move); });
+  document.querySelectorAll('.unit.choice').forEach((el) => { el.onclick = () => submit(me, `block:${el.dataset.unit.slice(1)}`); });
+  document.querySelectorAll('.hcard.choice').forEach((el) => {
+    el.onclick = () => { const m = legal.find((x) => x.id.startsWith('resp:') && x.cards.includes(el.dataset.hand)); if (m) submit(me, m.id); };
+  });
+  document.querySelectorAll('.unit.hasact').forEach((el) => {
+    el.onclick = (e) => {
+      const acts = legal.filter((m) => m.id.startsWith('act:') && m.cards.includes(el.dataset.unit));
+      menu(e.clientX, e.clientY, acts.map((m) => [m.label, () => submit(me, m.id)]));
+    };
+  });
+}
+
+// ---- small UI pieces -------------------------------------------------------------
+function menu(x, y, items) {
+  const m = $('#menu');
+  m.innerHTML = items.map((it, k) => `<button data-k="${k}">${esc(it[0])}</button>`).join('') + '<button data-k="x">Cancel</button>';
+  m.style.left = `${Math.min(x, innerWidth - 240)}px`; m.style.top = `${y}px`; m.style.display = 'block';
+  m.onclick = (e) => { const k = e.target.dataset.k; hideMenu(); if (k !== 'x' && k != null) items[+k][1](); };
+}
+function hideMenu() { $('#menu').style.display = 'none'; }
+function cover(title, text, btns) {
+  $('#coverTitle').textContent = title; $('#coverText').textContent = text;
+  $('#coverBtns').innerHTML = btns.map((b, k) => `<button class="primary" data-k="${k}">${esc(b[0])}</button>`).join(' ');
+  $('#coverBtns').onclick = (e) => { const k = e.target.dataset.k; if (k != null) btns[+k][1](); };
+  $('#cover').style.display = 'grid';
+}
+function hideCover() { $('#cover').style.display = 'none'; }
+let toastTimer;
+function toast(msg, bad = false) {
+  const t = $('#toast'); t.textContent = msg; t.className = bad ? 'err' : ''; t.style.display = 'block';
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.style.display = 'none'; }, 3500);
+}
+function download() {
+  const out = { ...session, metrics: E.metrics(state), log: state.log, savedAt: new Date().toISOString() };
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' }));
+  a.download = online ? `online-${online.code}-g${online.room.game}.json` : `table-session-seed${session.seed}.json`; a.click();
+}
+
+// ---- online: the room is the referee, this page is a view of it -----------------------
+// The room is run by the host's browser (on a plain website) or by the Node lobby; net.js hides which.
+const lobbyUrl = () => new URL('index.html', location.href).href;   // on the website the lobby is index.html
+function record() {
+  if (!online?.room || !session) return;
+  keepRecord({ source: 'online', code: online.code, game: online.room.game, seed: session.seed, firstPlayer: session.firstPlayer,
+    match: session.match, names: session.names, you: online.room.you, intents: session.intents, over: !!state.over, winner: state.over ? state.winner : null,
+    metrics: E.metrics(state), log: state.log, created: online.created ??= new Date().toISOString(), savedAt: new Date().toISOString() });
+}
+async function sendMove(id, n, ms) {
+  const r = await online.net.send('move', { id, n, ms });
+  if (!r.ok) { toast(`That move didn't go through: ${r.body.error}`, true); if (r.body.room) onRoom(r.body.room, true); }
+  else record();
+}
+async function rematch() {
+  const r = await online.net.send('rematch', {});
+  if (!r.ok) toast(r.body.error || 'Could not start a rematch', true);
+}
+const deal = (room) => {
+  hideCover();
+  online.created = null;
+  start(room.seed, String(room.you), room.intents, { firstPlayer: room.firstPlayer, match: room.players.map((p) => p.deck), names: room.players.map((p) => p.name) });
+};
+// Every message carries the whole room, so a missed one costs nothing: replay what is new,
+// or redeal from the start if this page and the room ever disagree.
+function onRoom(room, force = false) {
+  online.room = room;
+  const link = `${lobbyUrl()}?join=${room.code}`;
+  $('#roomInfo').textContent = `Room ${room.code} · game ${room.game} · you are ${room.players[room.you]?.name ?? '?'}`;
+  if (!room.started) {
+    cover('Waiting for an opponent', `Send your friend the code ${room.code}, or this link: ${link}${online.net.kind === 'host' ? ' — keep this page open: your browser is hosting the game.' : ''}`, [
+      ['Copy link', () => navigator.clipboard?.writeText(link).then(() => toast('Link copied.'), () => toast(link))],
+      ['Back to lobby', () => { location.href = lobbyUrl(); }]]);
+    return;
+  }
+  const mine = session?.intents ?? [];
+  const same = session && session.game === room.game && room.intents.length >= mine.length
+    && mine.every((it, k) => it.seat === room.intents[k].seat && it.id === room.intents[k].id);
+  if (force || !same) { deal(room); session.game = room.game; record(); return; }
+  for (const it of room.intents.slice(mine.length)) submit(it.seat, it.id, { remote: true });
+  record();
+}
+function goOnline() {
+  const net = openRoom(ROOM);
+  if (!net) { location.href = `${lobbyUrl()}?join=${ROOM}`; return; }
+  online = { code: ROOM, net, room: null };
+  // The seed, the seat and New game belong to the room in an online game.
+  for (const el of [$('#seed').closest('label'), $('#human').closest('label'), $('#new')]) el.style.display = 'none';
+  $('#roomInfo').style.display = '';
+  net.onStatus((msg) => { $('#netStatus').textContent = msg ?? ''; $('#netStatus').style.display = msg ? '' : 'none'; });
+  net.onRoom((room) => {
+    if (room.you === -1) { cover('Not your room', 'This browser holds no seat in that room.', [['Back to lobby', () => { location.href = lobbyUrl(); }]]); return; }
+    onRoom(room);
+  });
+}
+
+$('#new').onclick = () => { hideCover(); start(+$('#seed').value || 1, $('#human').value); };
+$('#download').onclick = download;
+try { $('#hints').checked = localStorage.getItem(KEY + '-hints') !== 'off'; } catch { /* private window */ }
+try { $('#autopass').checked = localStorage.getItem(KEY + '-autopass') !== 'off'; } catch { /* private window */ }
+$('#autopass').onchange = () => {
+  try { localStorage.setItem(KEY + '-autopass', $('#autopass').checked ? 'on' : 'off'); } catch { /* private window */ }
+  if (session) schedule();
+};
+$('#hints').onchange = () => {
+  try { localStorage.setItem(KEY + '-hints', $('#hints').checked ? 'on' : 'off'); } catch { /* private window */ }
+  if (session) { session.hints = $('#hints').checked; save(); }
+};
+$('#human').onchange = () => { if (session) { session.human = $('#human').value; save(); start(session.seed, session.human, session.intents); } };
+document.addEventListener('click', (e) => { if (!e.target.closest('#menu, .unit.hasact')) hideMenu(); });
+
+// Resume a saved game for the same match, else start fresh.
+let saved = null;
+if (ROOM) goOnline(); else {
+// Against the bot you hold the first seat; the lobby picked both decks, so the seat menu goes.
+if (SOLO) { $('#human').value = '0'; $('#human').closest('label').style.display = 'none'; }
+try { saved = JSON.parse(localStorage.getItem(GAME_KEY()) || 'null'); } catch { saved = null; }
+if (saved && JSON.stringify(saved.match) === JSON.stringify(LOCAL_MATCH)) {
+  $('#seed').value = saved.seed; $('#human').value = SOLO ? '0' : saved.human;
+  start(saved.seed, $('#human').value, saved.intents);
+} else { const seed = SOLO ? 1 + Math.floor(Math.random() * 1e6) : 1; $('#seed').value = seed; start(seed, '0'); }
+}
+</script>
+</body>
+</html>

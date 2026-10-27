@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="halo-host" content="static">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>Halo TCG — Lobby</title>
+<!--
+  The online lobby. Put the web/ folder on any website and this is its front page (index.html):
+  create a room, send the four-letter code to a friend, and both of you land on the table.
+  The host's browser runs the room; net.js connects the two. The rules all live in engine.js.
+-->
+<style>
+  :root {
+    --bg: #030a14; --felt: #071628; --felt-2: #0c2442; --line: #1e5a8c; --ink: #dff4ff; --ink-2: #7fb8de;
+    --gold: #f2c14e; --bad: #ff5a5a; --card: #0a1f38; --card-2: #123259; --cyan: #5fd0ff;
+    --bloom: 0 0 6px rgba(95,208,255,.75), 0 0 18px rgba(95,208,255,.35);
+    --chamfer: polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; background: radial-gradient(ellipse at top, var(--felt-2), var(--bg) 70%); color: var(--ink);
+    font: 15px/1.4 Rajdhani, system-ui, -apple-system, Segoe UI, sans-serif; }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 28px 16px 48px; }
+  h1 { font-size: 30px; letter-spacing: .18em; margin: 0 0 4px; color: var(--cyan); text-shadow: var(--bloom); }
+  .sub { color: var(--ink-2); margin: 0 0 24px; letter-spacing: .06em; text-transform: uppercase; font-size: 13px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 720px) { .grid { grid-template-columns: 1fr; } }
+  .panel { background: linear-gradient(180deg, rgba(18,50,89,.55), rgba(10,31,56,.75)); border: 1px solid var(--line); clip-path: var(--chamfer); padding: 16px 18px; }
+  .panel h2 { margin: 0 0 12px; font-size: 15px; letter-spacing: .14em; text-transform: uppercase; color: var(--cyan); }
+  label { display: block; color: var(--ink-2); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; margin: 10px 0 4px; }
+  input, select, button { font: inherit; color: var(--ink); background: var(--card); border: 1px solid var(--line); padding: 7px 10px; width: 100%; }
+  input:focus, select:focus { outline: 1px solid var(--cyan); }
+  button { cursor: pointer; margin-top: 14px; background: #1f5f8b; border-color: #3c8cc4; letter-spacing: .1em; text-transform: uppercase; font-weight: 700; clip-path: var(--chamfer); }
+  button:hover { filter: brightness(1.2); }
+  button.small { width: auto; margin: 0; padding: 4px 12px; font-size: 12px; }
+  .code { text-transform: uppercase; letter-spacing: .3em; font-weight: 700; font-size: 20px; text-align: center; }
+  .deckinfo { color: var(--ink-2); font-size: 13px; min-height: 2.8em; margin-top: 6px; }
+  .rooms { display: grid; gap: 6px; }
+  .room { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 10px; background: rgba(0,0,0,.25); border: 1px solid rgba(30,90,140,.6); }
+  .room b { letter-spacing: .2em; color: var(--gold); }
+  .muted { color: var(--ink-2); font-size: 13px; }
+  .err { color: var(--bad); min-height: 1.3em; margin-top: 8px; font-size: 13px; }
+  .full { grid-column: 1 / -1; }
+</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+<div class="wrap">
+  <h1>HALO TCG</h1>
+  <p class="sub">Online playtest lobby</p>
+
+  <div class="grid">
+    <div class="panel full">
+      <h2>You</h2>
+      <div class="grid">
+        <div><label for="name">Your name</label><input id="name" maxlength="24" placeholder="Spartan"></div>
+        <div><label for="deck">Your deck</label><select id="deck"></select></div>
+      </div>
+      <div class="deckinfo" id="deckinfo"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Host a game</h2>
+      <p class="muted" id="hostNote"></p>
+      <button id="create">Create room</button>
+      <div class="err" id="createErr"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Join a game</h2>
+      <label for="code">Room code</label><input id="code" class="code" maxlength="4" placeholder="ABCD" autocomplete="off">
+      <button id="join">Join room</button>
+      <div class="err" id="joinErr"></div>
+    </div>
+
+    <div class="panel full">
+      <h2>Play the bot</h2>
+      <div class="grid">
+        <div><label for="foe">Bot's deck</label><select id="foe"></select>
+          <div class="deckinfo" id="foeinfo"></div></div>
+        <div><p class="muted">The bot is the simulator's own player, the one the balance runs use. Nothing to connect: the game runs in this page, and works offline once the site has loaded.</p>
+          <button id="solo">Play the bot</button></div>
+      </div>
+    </div>
+
+    <div class="panel full" id="roomsPanel">
+      <h2>Open rooms</h2>
+      <div class="rooms" id="rooms"><span class="muted">Loading…</span></div>
+    </div>
+
+    <div class="panel full">
+      <h2>Your games</h2>
+      <p class="muted" id="recordsInfo"></p>
+      <button id="download" style="width:auto">Download game records</button>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import { DECKS } from './room.js';
+import { serverAvailable, createHostedRoom, rememberGuest, rememberServerSeat, records } from './net.js';
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const remember = (k, v) => { try { localStorage.setItem(k, v); } catch { /* private window */ } };
+const recall = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
+
+// On a plain website there is no server, and the host's browser runs the room. If the page is
+// served by the optional Node lobby (online.mjs), rooms live there instead and are listed below.
+const SERVER = await serverAvailable();
+
+async function call(url, body) {
+  const r = await fetch(url, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || `Server said ${r.status}`);
+  return j;
+}
+const go = (code) => { location.href = `table.html?room=${code}`; };
+
+function showDecks() {
+  const order = ['reference', 'competitive'];
+  const byFaction = {};
+  for (const d of DECKS) (byFaction[d.faction] ??= []).push(d);
+  $('#deck').innerHTML = $('#foe').innerHTML = Object.entries(byFaction).map(([f, ds]) => `<optgroup label="${esc(f)}">${ds
+    .sort((a, b) => order.indexOf(a.calibration) - order.indexOf(b.calibration))
+    .map((d) => `<option value="${esc(d.id)}">${esc(d.name)}${d.calibration === 'competitive' ? ' — competitive' : ''}</option>`).join('')}</optgroup>`).join('');
+  const last = recall('halo-online-deck');
+  if (last && DECKS.some((d) => d.id === last)) $('#deck').value = last;
+  const lastFoe = recall('halo-online-foe');
+  $('#foe').value = lastFoe && DECKS.some((d) => d.id === lastFoe) ? lastFoe : (DECKS.find((d) => d.id !== $('#deck').value && d.calibration === 'reference') ?? DECKS[0]).id;
+  showDeck(); showFoe();
+}
+function showDeck() {
+  const d = DECKS.find((x) => x.id === $('#deck').value);
+  $('#deckinfo').textContent = d ? `${d.cards} cards · ${d.archetype ?? ''} · ${d.strategy ?? ''}` : '';
+  if (d) remember('halo-online-deck', d.id);
+}
+function showFoe() {
+  const d = DECKS.find((x) => x.id === $('#foe').value);
+  $('#foeinfo').textContent = d ? `${d.cards} cards · ${d.archetype ?? ''} · ${d.strategy ?? ''}` : '';
+  if (d) remember('halo-online-foe', d.id);
+}
+function solo() {
+  const { name, deck } = me();
+  location.href = `table.html?${new URLSearchParams({ deck, vs: $('#foe').value, ...(name ? { name } : {}) })}`;
+}
+async function loadRooms() {
+  try {
+    const rooms = await call('api/rooms');
+    $('#rooms').innerHTML = rooms.length
+      ? rooms.map((r) => `<div class="room"><span><b>${esc(r.code)}</b> &nbsp; ${esc(r.host)} — ${esc(r.deck)}</span><button class="small" data-code="${esc(r.code)}">Join</button></div>`).join('')
+      : '<span class="muted">No open rooms. Create one and send the code to a friend.</span>';
+  } catch (e) { $('#rooms').innerHTML = `<span class="muted">Could not reach the lobby server (${esc(e.message)}).</span>`; }
+}
+const me = () => { const name = $('#name').value.trim(); remember('halo-online-name', name); return { name, deck: $('#deck').value }; };
+
+async function create() {
+  $('#createErr').textContent = '';
+  try {
+    if (SERVER) { const r = await call('api/rooms', me()); rememberServerSeat(r.code, r.token); go(r.code); }
+    else go(createHostedRoom(me()));
+  } catch (e) { $('#createErr').textContent = e.message; }
+}
+async function join(code) {
+  $('#joinErr').textContent = '';
+  code = String(code || '').trim().toUpperCase();
+  if (!/^[A-Z]{4}$/.test(code)) { $('#joinErr').textContent = 'A room code is four letters.'; return; }
+  try {
+    if (SERVER) { const r = await call(`api/rooms/${code}/join`, { ...me(), token: JSON.parse(recall(`halo-online-${code}`) || 'null') }); rememberServerSeat(code, r.token); }
+    else rememberGuest(code, me());
+    go(code);
+  } catch (e) { $('#joinErr').textContent = e.message; }
+}
+function showRecords() {
+  const n = records().length;
+  $('#recordsInfo').textContent = n ? `${n} game${n === 1 ? '' : 's'} recorded in this browser.` : 'No games recorded in this browser yet.';
+  $('#download').disabled = !n;
+}
+$('#download').onclick = () => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(records(), null, 2)], { type: 'application/json' }));
+  a.download = `halo-tcg-games-${new Date().toISOString().slice(0, 10)}.json`; a.click();
+};
+
+$('#name').value = recall('halo-online-name') || '';
+$('#deck').onchange = showDeck;
+$('#foe').onchange = showFoe;
+$('#solo').onclick = solo;
+$('#create').onclick = create;
+$('#join').onclick = () => join($('#code').value);
+$('#code').onkeydown = (e) => { if (e.key === 'Enter') join($('#code').value); };
+$('#rooms').onclick = (e) => { const c = e.target.dataset.code; if (c) join(c); };
+const fromLink = new URLSearchParams(location.search).get('join');
+if (fromLink) { $('#code').value = fromLink.toUpperCase(); $('#name').focus(); }
+
+showDecks(); showRecords();
+if (SERVER) { loadRooms(); setInterval(loadRooms, 4000); }
+else $('#roomsPanel').style.display = 'none';
+$('#hostNote').textContent = SERVER ? 'Opens a room on this server and gives you a four-letter code to send to a friend.'
+  : 'Opens a room and gives you a four-letter code to send to a friend. Your browser hosts the game, so keep its page open while you play.';
+</script>
+</body>
+</html>
