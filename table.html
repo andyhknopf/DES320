@@ -189,6 +189,11 @@
   .fx.dmg { color: #ff5a4a; text-shadow: 0 0 6px rgba(255,70,50,.95), 0 0 18px rgba(255,70,50,.55), 0 2px 0 #3a0000; }
   .fx.shield { color: #9fe8ff; font-size: 24px; text-shadow: 0 0 6px rgba(95,208,255,.95), 0 0 18px rgba(95,208,255,.6); }
   .hero .shieldbar { width: 120px; }
+  .hero .power { font-size: 12px; color: var(--cyan); letter-spacing: .04em; max-width: 260px; }
+  .hero .power b { color: #ffd76a; text-transform: uppercase; letter-spacing: .1em; }
+  .hero .power.live b { text-shadow: 0 0 8px rgba(255,200,80,.9); }
+  .hero .power .why { opacity: .75; }
+  #buttons button.hero { border-color: #ffd76a; color: #ffd76a; box-shadow: 0 0 10px rgba(255,200,80,.5); }
   .hero .shieldbar .lbl { font-size: 11px; color: var(--cyan); text-transform: uppercase; letter-spacing: .12em; text-shadow: var(--bloom); }
   .hero .shieldbar .track { height: 8px; background: rgba(10,40,75,.9); border: 1px solid var(--line); margin-top: 2px; }
   .hero .shieldbar .fill { height: 100%; background: linear-gradient(90deg, #2fa8ff, #9fe8ff); box-shadow: 0 0 8px rgba(95,208,255,.9); transition: width .35s; }
@@ -240,7 +245,8 @@
         In combat, drag a <b>glowing unit</b> onto a red-outlined enemy unit or hero to attack.<br>
         In your main step, drag a Redeploy unit to an empty cell; click a ⚡ unit to activate it.<br>
         When attacked: click a gold blocker (or No block), then a gold Tactic (or No response).<br>
-        <b>zZ</b> = placed this turn. Front zone blocks; side zone flanks.
+        <b>zZ</b> = placed this turn. Front zone blocks; side zone flanks.<br>
+        <b>Hero power:</b> while you have 2+ fewer units than your opponent, a gold button uses your hero's power (2 resource, once a turn). The further behind, the stronger it is.
       </div></div>
     <div class="panel"><h2>Log</h2><div id="log"></div></div>
   </aside>
@@ -470,7 +476,8 @@ function render() {
       <div class="life">${h.life}</div>
       <div class="shieldbar ${h.shield ? '' : 'down'}" title="Shield: soaks hero damage, recharges to full at the start of this hero's turn"><div class="lbl">${h.shield ? `Shield ${h.shield}/${h.shieldMax}` : 'Shield down'}</div><div class="track"><div class="fill" style="width:${h.shieldMax ? (100 * h.shield / h.shieldMax) : 0}%"></div></div></div>
       <div><div class="name">${esc(h.name)}${t.cur === h.seat ? ' — turn ' + t.turn : ''}</div>
-        <div class="meta">Hand ${h.hand} · Deck ${h.deck}${h.skipping ? ' · skipping (+2 next turn)' : ''}</div></div>
+        <div class="meta">Hand ${h.hand} · Deck ${h.deck}${h.skipping ? ' · skipping (+2 next turn)' : ''}</div>
+        ${h.hero ? `<div class="power ${h.behind >= h.gate && !h.usedPower ? 'live' : ''}" title="${esc(h.hero)} counters ${esc(h.counters)}. The power works only while this player has ${h.gate}+ fewer units on the board, once a turn, for 2 resource. Its level is how many units behind, minus 1 (up to 4), +1 against the hero it counters."><b>${esc(h.hero)}</b> · ${esc(h.power)} — ${h.behind >= h.gate ? `level ${h.level}: ${esc(h.powerText)}${h.usedPower ? ' <span class="why">(used this turn)</span>' : ''}` : `<span class="why">ready when ${h.gate}+ units behind</span>`}</div>` : ''}</div>
       <div class="crystals" title="${h.res} of ${h.max} resource">${Array.from({ length: Math.max(h.max, 1) }, (_, k) => `<i class="${k < h.res ? 'full' : ''}"></i>`).join('')}</div>
       <div class="meta">${h.res}/${h.max}</div>
     </div>`;
@@ -536,7 +543,7 @@ function render() {
   $('#prompt').innerHTML = state.over ? `<span class="who">${esc(state.P[state.winner].name)}</span> wins.`
     : myTurn ? prompts[t.phase] : `<span class="who">${esc(who)}</span> is thinking…`;
   const plain = legal.filter((m) => !(m.cards || []).length);
-  $('#buttons').innerHTML = plain.map((m) => `<button class="${m.id === 'end' || m.id === 'combat' || m.id === 'pass' ? 'primary' : m.id === 'skip' ? 'warn' : ''}" data-move="${esc(m.id)}">${esc(m.label)}</button>`).join(' ');
+  $('#buttons').innerHTML = plain.map((m) => `<button class="${m.id === 'end' || m.id === 'combat' || m.id === 'pass' ? 'primary' : m.id === 'skip' ? 'warn' : m.id === 'hero' ? 'hero' : ''}" data-move="${esc(m.id)}">${esc(m.label)}</button>`).join(' ');
 
   $('#log').innerHTML = state.log.slice(-80).map((l) => `<div>${esc(l)}</div>`).reverse().join('');
   if (state.over && online) cover(`${state.P[state.winner].name} wins`, `Turn ${state.turn}. ${session.intents.length} moves. A record of the game is kept in this browser.`, [['Rematch', rematch], ['Download session', download], ['Back to lobby', () => { location.href = lobbyUrl(); }]]);

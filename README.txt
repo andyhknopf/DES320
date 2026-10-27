@@ -1,5 +1,5 @@
 HALO TCG — ONLINE PLAY
-Built 2026-10-27 11:06 UTC from the current cards and rules.
+Built 2026-10-27 23:32 UTC from the current cards and rules.
 
 TO PUT IT ONLINE
 Upload everything in this folder to your website, into any folder you like

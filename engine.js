@@ -13,7 +13,8 @@ import { DATA } from './cards-data.js';
 import { MATCH } from './match.js';
 
 export const ASSUMPTIONS = [
-  'Pace (rules.md, 2026-10-27): life 50 + 20 recharging hero shield, 3x9 board, resource starts at 2 and caps at 15, opening hand 7, draw 2 a turn; --life overrides.',
+  'Heroes (rules.md, 2026-10-27): each faction hero has a power usable once per turn for 2 while 2+ units behind (an Infection Form counts as 3/4); level = units behind - 1 (1-4), +1 against the hero it counters. The engine picks the power target, and the bot uses it as soon as it can.',
+  'Pace (rules.md, 2026-10-27): life 70 + 5 recharging hero shield, 3x9 board, resource starts at 2 and caps at 15, opening hand 7, draw 2 a turn; --life overrides.',
   'Summoning sickness: a unit cannot attack the turn it is placed (rules.md; --sick 0 turns this off).',
   'Activation costs are provisional test values: Ark Foundry 3, Cartographer 1, Carrier Form 1, the other five 2. Once per turn; not on the turn the unit was placed.',
   'Skipping the Main step makes the next Resource step add --skip (default 2, provisional) instead of 1.',
@@ -53,7 +54,7 @@ const byTitle = (t) => J.cards.find((c) => c.title === t);
 
 // Rules values and policy switches. Defaults are the current rules.md; configure()
 // overrides them for an experiment.
-let LIFE = 50, SKIP = 2, SMART = true, EXTRA = 0, AHEAD = 1, COIN = false, BLOCK = true, SICK = true;
+let LIFE = 70, SKIP = 2, SMART = true, EXTRA = 0, AHEAD = 1, COIN = false, BLOCK = true, SICK = true;
 // NAIVE names a faction whose units the bot places in any free cell, ignoring zones: a
 // stand-in for a new player who has not learned where that faction's units belong.
 let NAIVE = null;
@@ -73,8 +74,9 @@ export function configure(o = {}) {
   if (o.doctrine != null) DOCTRINE = +o.doctrine;
   if (o.breakRes != null) BREAKRES = +o.breakRes;
   if (o.breakShield != null) BREAKSHIELD = +o.breakShield;
+  if (o.heroes != null) HEROES = !!o.heroes;
   for (const k of ['cols', 'cap', 'hand', 'draw', 'grow', 'start']) if (o[k] != null) ({ cols: () => (COLS = +o.cols), cap: () => (CAP = +o.cap), hand: () => (HAND = +o.hand), draw: () => (DRAW = +o.draw), grow: () => (GROW = +o.grow), start: () => (START = +o.start) })[k]();
-  return { breakDraw: BREAKDRAW, shield: HSHIELD, cols: COLS, cap: CAP, hand: HAND, draw: DRAW, grow: GROW, start: START, life: LIFE, skip: SKIP, smart: SMART, extra: EXTRA, ahead: AHEAD, coin: COIN, block: BLOCK, sick: SICK, naive: NAIVE };
+  return { heroes: HEROES, breakDraw: BREAKDRAW, shield: HSHIELD, cols: COLS, cap: CAP, hand: HAND, draw: DRAW, grow: GROW, start: START, life: LIFE, skip: SKIP, smart: SMART, extra: EXTRA, ahead: AHEAD, coin: COIN, block: BLOCK, sick: SICK, naive: NAIVE };
 }
 let seed = 1;
 // Per-game record the balance report reads: which cards were dealt, drawn and played.
@@ -89,7 +91,7 @@ const ROWS = 3, MAX_TURNS = 120;
 // Pace: board width, resource cap, opening hand, cards drawn and resource gained per turn, starting resource.
 let COLS = 9, CAP = 15, HAND = 7, DRAW = 2, GROW = 1, START = 2;
 // Hero shields: soak hero damage first and recharge in full at the start of the owner's turn. 0 = off.
-let HSHIELD = 20;
+let HSHIELD = 5;
 const ZONE = { Grunt: 0, Hunter: 0, Jackal: 1, Elite: 2, Turret: 2 };
 const has = (c, k) => (c.abilities || []).includes(k);
 const stat = (c) => { const [a, h] = (c.stats || '0/0').split('/').map(Number); return { a, h }; };
@@ -102,7 +104,8 @@ const paired = (p, u) => p.board.some((v) => adj(u, v) && isInfantry(v));
 function newPlayer(deck, name) {
   const lib = [];
   for (const [id, q] of Object.entries(deck.cards)) for (let i = 0; i < q; i++) lib.push(id);
-  return { name, deck: shuffle(lib), hand: [], board: [], life: LIFE, max: 0, res: 0, fatigue: 0, turns: 0, skipped: false };
+  const faction = lib.map((id) => CARD[id].faction).find((f) => HERO_OF[f]);
+  return { name, hero: HERO_OF[faction] || 'Master Chief', deck: shuffle(lib), hand: [], board: [], life: LIFE, max: 0, res: 0, fatigue: 0, turns: 0, skipped: false };
 }
 
 function draw(p, n = 1) {
@@ -268,6 +271,50 @@ function heroHit(p, n, mult = 1) {
   return n - s;
 }
 const heroLeft = (p) => p.life + (p.hshield || 0);
+
+// Heroes: each faction's leader has a power that works only from behind. Once per turn, pay
+// HERO_COST, while the opponent has at least HERO_GATE more units on the board. Its level is how
+// many units behind, minus 1 (1 to 4), +1 against the hero this one counters. Infection Forms count as 3/4 of a
+// unit (4 of them = 3 units, rounded down), or Flood's swarm keeps every opponent's power on. HEROES = false turns them off.
+let HEROES = true;
+const HERO_COST = 2, HERO_GATE = 2;
+const HERO_OF = { 'Human/UNSC': 'Master Chief', Covenant: 'The Arbiter', Forerunner: '343 Guilty Spark', Flood: 'Gravemind' };
+const POWER = { 'Master Chief': 'Hijack', 'The Arbiter': 'Camo Strike', '343 Guilty Spark': 'Containment', Gravemind: 'Assimilate' };
+const COUNTERS = { 'Master Chief': '343 Guilty Spark', '343 Guilty Spark': 'The Arbiter', 'The Arbiter': 'Gravemind', Gravemind: 'Master Chief' };
+const heroCount = (q) => q.board.reduce((s, u) => s + (u.id === IF ? 3 : 4), 0);
+const heroBehind = (p, o) => Math.floor((heroCount(o) - heroCount(p)) / 4);
+const heroLevel = (p, o) => Math.max(1, Math.min(4, heroBehind(p, o) - 1)) + (COUNTERS[p.hero] === o.hero ? 1 : 0);
+const POWER_TEXT = {
+  'Master Chief': (L) => `Take control of an enemy unit with up to ${2 * L} Health left.`,
+  'The Arbiter': (L) => `Deal ${3 * L} damage to an enemy unit.`,
+  '343 Guilty Spark': (L) => `Freeze ${L + 1} enemy units for their next turn and deal ${L} damage to each.`,
+  Gravemind: (L) => `Destroy an enemy unit with up to ${2 * L} Health left, then put ${L} Infection Form${L > 1 ? 's' : ''} on your board.`,
+};
+// The hero power's effect now, or null when it cannot be used. The engine picks the target:
+// the strongest enemy unit the power can take or kill, as for every other automatic effect.
+function heroPower(p, o, turn) {
+  if (!HEROES || !POWER[p.hero] || p.usedPower === turn || p.res < HERO_COST || heroBehind(p, o) < HERO_GATE) return null;
+  const L = heroLevel(p, o), left = (x) => hpMax(o, x) - x.dmg + x.shield;
+  const strongest = (f) => o.board.filter(f).sort((x, y) => atk(o, y) - atk(o, x))[0];
+  const name = `${p.hero}'s ${POWER[p.hero]} (level ${L})`;
+  if (p.hero === 'Master Chief') {
+    const t = strongest((x) => !has(CARD[x.id], 'encrypt') && left(x) <= 2 * L), to = t && (bestCell(p, CARD[t.id]) || cells(p)[0]);
+    return t && to ? () => { note(`${name} takes ${CARD[t.id].title}.`); o.board = o.board.filter((x) => x !== t); t.r = to.r; t.c = to.c; t.placed = turn; t.lastAtk = turn; p.board.push(t); } : null;
+  }
+  if (p.hero === 'The Arbiter') {
+    const t = pickEnemy(o, 3 * L);
+    return t ? () => { note(`${name} hits ${CARD[t.id].title} for ${3 * L}.`); damage(o, t, 3 * L); } : null;
+  }
+  if (p.hero === '343 Guilty Spark') {
+    const ts = o.board.filter((x) => !x.stunned).sort((x, y) => atk(o, y) - atk(o, x)).slice(0, L + 1);
+    return ts.length ? () => { note(`${name} freezes ${ts.map((x) => CARD[x.id].title).join(', ')}.`); for (const x of ts) { x.stunned = true; damage(o, x, L); } } : null;
+  }
+  const t = strongest((x) => left(x) <= 2 * L);
+  return t ? () => { note(`${name} assimilates ${CARD[t.id].title}.`); t.dmg = 999; cleanup(o); spawnAny(p, IF, L, turn); } : null;
+}
+function useHeroPower(p, o, turn, go) {
+  p.res -= HERO_COST; p.usedPower = turn; go(); cleanup(o); cleanup(p);
+}
 function heal(p, n) { p.life = Math.min(LIFE, p.life + n); }
 
 function bestCell(p, c) {
@@ -709,7 +756,10 @@ function game(P, firstA) {
   for (let turn = 1; turn <= MAX_TURNS; turn++) {
     const p = P[cur], o = P[1 - cur];
     if (!beginTurn(p, o, turn)) return { winner: 1 - cur, turn };
+    // the bot uses its hero power as soon as it can: before the Main step, or once it has fallen behind
+    let go = heroPower(p, o, turn); if (go) useHeroPower(p, o, turn, go);
     mainPhase(p, o, turn);
+    go = heroPower(p, o, turn); if (go) useHeroPower(p, o, turn, go);
     attackPhase(p, o, turn);
     checkGlory(p, o, turn); checkGlory(o, p, turn);
     if (o.life <= 0) return { winner: cur, turn };
@@ -809,6 +859,7 @@ export function legalMoves(state, seat, { cells: byCell = false } = {}) {
           else for (let r = 0; r < ROWS; r++) if (freeCellIn(p, r)) moves.push({ id: `move:${u.uid}:${r}`, label: `Redeploy ${t} to your ${ROWNAME[r]} zone (pay ${redeployCost(p, u)})`, group: 'Redeploy', cards: [`u${u.uid}`] });
         }
       }
+      if (heroPower(p, o, turn)) moves.push({ id: 'hero', label: `${p.hero}: ${POWER[p.hero]} (pay ${HERO_COST}, level ${heroLevel(p, o)}) — ${POWER_TEXT[p.hero](heroLevel(p, o))}`, group: 'Hero', tone: 'hero' });
       if (!p.didMain) moves.push({ id: 'skip', label: `Skip your Main step (+${SKIP} resource growth next turn)`, group: 'Turn' });
       moves.push({ id: 'combat', label: 'Go to combat', group: 'Turn', tone: 'primary' });
     } else if (state.phase === 'combat') {
@@ -892,6 +943,9 @@ export function apply(state, intent) {
       p.res -= cost; u.activated = true; p.didMain = true;
       s.log.push(`${p.name} activates ${CARD[u.id].title}.`);
       activationEffect(p, o, u, turn, false)(); cleanup(o); cleanup(p); checkGlory(p, o, turn);
+    } else if (kind === 'hero') {
+      s.log.push(`${p.name} uses ${p.hero}'s ${POWER[p.hero]}.`);
+      useHeroPower(p, o, turn, heroPower(p, o, turn)); checkGlory(p, o, turn);
     } else if (kind === 'move') {
       const u = unitByUid(p, x); p.didMain = true;
       s.log.push(`${p.name} redeploys ${CARD[u.id].title} to the ${ROWNAME[+y]} zone.`);
@@ -996,7 +1050,7 @@ function tableView(state, seat) {
     };
     return {
       rows: ROWS, cols: COLS, rowNames: ROWNAME, cur: state.cur, active: activeSeat(state), phase: state.phase, turn: state.turn,
-      heroes: state.P.map((pl, i) => ({ seat: i, name: pl.name, life: pl.life, shield: pl.hshield || 0, shieldMax: HSHIELD, res: pl.res, max: pl.max, deck: pl.deck.length, hand: pl.hand.length, skipping: !!pl.skipped })),
+      heroes: state.P.map((pl, i) => ({ seat: i, name: pl.name, hero: pl.hero ?? null, power: POWER[pl.hero] ?? null, counters: COUNTERS[pl.hero] ?? null, behind: heroBehind(pl, state.P[1 - i]), gate: HERO_GATE, level: heroLevel(pl, state.P[1 - i]), powerText: POWER_TEXT[pl.hero]?.(heroLevel(pl, state.P[1 - i])) ?? '', usedPower: pl.usedPower === state.turn, life: pl.life, shield: pl.hshield || 0, shieldMax: HSHIELD, res: pl.res, max: pl.max, deck: pl.deck.length, hand: pl.hand.length, skipping: !!pl.skipped })),
       boards: state.P.map((pl, i) => pl.board.map((u) => unit(i, u))),
       hand: state.P[seat].hand.map((id, k) => { const c = CARD[id]; return { id: `h${seat}-${k}`, title: c.title, cost: c.cost, type: c.type, subtype: c.subtype ?? null, faction: c.faction, stats: c.stats || null, text: c.text, keywords: c.abilities ?? [] }; }),
       pending: state.pending ? { attacker: `u${state.pending.a}`, target: state.pending.t == null ? 'hero' : `u${state.pending.t}` } : null,
@@ -1018,6 +1072,7 @@ export function botMove(state, seat) {
     const p = s.P[s.cur], o = s.P[1 - s.cur], turn = s.turn;
     const pick = (id) => (legal.includes(id) ? id : null);
     if (s.phase === 'main') {
+      if (pick('hero')) return 'hero';
       if (!p.didMain && p.max < CAP && !p.hand.some((id) => CARD[id].type === 'Unit' && CARD[id].cost <= p.res)
         && !p.board.some((u) => ACT_COST[CARD[u.id].title] !== undefined && u.placed < turn && ACT_COST[CARD[u.id].title] <= p.res)) return 'skip';
       const tactics = p.hand.filter((id) => CARD[id].type === 'Tactic').map((id) => CARD[id].cost);
