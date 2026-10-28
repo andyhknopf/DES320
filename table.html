@@ -246,7 +246,7 @@
         In your main step, drag a Redeploy unit to an empty cell; click a ⚡ unit to activate it.<br>
         When attacked: click a gold blocker (or No block), then a gold Tactic (or No response).<br>
         <b>zZ</b> = placed this turn. Front zone blocks; side zone flanks.<br>
-        <b>Hero power:</b> while you have 2+ fewer units than your opponent, a gold button uses your hero's power (2 resource, once a turn). The further behind, the stronger it is.
+        <b>Hero power:</b> each turn your opponent gets damage past your shield, you gain a charge. A gold button spends 1 charge and 2 resource to use your hero's power (once a turn). The more units you are behind, the stronger it is.
       </div></div>
     <div class="panel"><h2>Log</h2><div id="log"></div></div>
   </aside>
@@ -477,7 +477,7 @@ function render() {
       <div class="shieldbar ${h.shield ? '' : 'down'}" title="Shield: soaks hero damage, recharges to full at the start of this hero's turn"><div class="lbl">${h.shield ? `Shield ${h.shield}/${h.shieldMax}` : 'Shield down'}</div><div class="track"><div class="fill" style="width:${h.shieldMax ? (100 * h.shield / h.shieldMax) : 0}%"></div></div></div>
       <div><div class="name">${esc(h.name)}${t.cur === h.seat ? ' — turn ' + t.turn : ''}</div>
         <div class="meta">Hand ${h.hand} · Deck ${h.deck}${h.skipping ? ' · skipping (+2 next turn)' : ''}</div>
-        ${h.hero ? `<div class="power ${h.behind >= h.gate && !h.usedPower ? 'live' : ''}" title="${esc(h.hero)} counters ${esc(h.counters)}. The power works only while this player has ${h.gate}+ fewer units on the board, once a turn, for 2 resource. Its level is how many units behind, minus 1 (up to 4), +1 against the hero it counters."><b>${esc(h.hero)}</b> · ${esc(h.power)} — ${h.behind >= h.gate ? `level ${h.level}: ${esc(h.powerText)}${h.usedPower ? ' <span class="why">(used this turn)</span>' : ''}` : `<span class="why">ready when ${h.gate}+ units behind</span>`}</div>` : ''}</div>
+        ${h.hero ? `<div class="power ${h.ready && !h.usedPower ? 'live' : ''}" title="${esc(h.hero)} counters ${esc(h.counters)}. A charge is gained each turn damage gets past this hero's shield. The power spends ${h.chargeCost} charge and 2 resource, once a turn. Its level is how many units behind, minus 1 (1 to 4), +1 against the hero it counters."><b>${esc(h.hero)}</b> · ${esc(h.power)} · charges ${h.charge} — ${h.ready ? `level ${h.level}: ${esc(h.powerText)}${h.usedPower ? ' <span class="why">(used this turn)</span>' : ''}` : `<span class="why">needs a charge: take a hit past the shield</span>`}</div>` : ''}</div>
       <div class="crystals" title="${h.res} of ${h.max} resource">${Array.from({ length: Math.max(h.max, 1) }, (_, k) => `<i class="${k < h.res ? 'full' : ''}"></i>`).join('')}</div>
       <div class="meta">${h.res}/${h.max}</div>
     </div>`;

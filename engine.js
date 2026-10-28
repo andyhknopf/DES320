@@ -13,7 +13,7 @@ import { DATA } from './cards-data.js';
 import { MATCH } from './match.js';
 
 export const ASSUMPTIONS = [
-  'Heroes (rules.md, 2026-10-27): each faction hero has a power usable once per turn for 2 while 2+ units behind (an Infection Form counts as 3/4); level = units behind - 1 (1-4), +1 against the hero it counters. The engine picks the power target, and the bot uses it as soon as it can.',
+  'Heroes (rules.md, 2026-10-27): each faction hero has a power usable once per turn for 2 resource and 1 charge; a player gains a charge each turn damage gets past their shield to their life. Level = units behind - 1 (1-4, an Infection Form counts as 3/4), +1 against the hero it counters. Containment freezes and deals no damage (2026-10-28). The engine picks the power target, and the bot uses it as soon as it can.',
   'Pace (rules.md, 2026-10-27): life 70 + 5 recharging hero shield, 3x9 board, resource starts at 2 and caps at 15, opening hand 7, draw 2 a turn; --life overrides.',
   'Summoning sickness: a unit cannot attack the turn it is placed (rules.md; --sick 0 turns this off).',
   'Activation costs are provisional test values: Ark Foundry 3, Cartographer 1, Carrier Form 1, the other five 2. Once per turn; not on the turn the unit was placed.',
@@ -27,7 +27,7 @@ export const ASSUMPTIONS = [
   'Tactics are played only at the attack window, one per declared attack, from resource left over after the owner\'s own turn.',
   'Policy reserves resource for the cheapest Tactic in hand, plays units greedily (most expensive first), then spends what is left on activations, then on Redeploy.',
   "Smart policy (--smart 1, default): Redeploy moves UNSC units to make Vehicle-infantry pairs, and once a turn for Cortana's draw; skips Main when nothing in hand is affordable and resource is below the cap. --smart 0 is the old policy (no Redeploy, no skip) but still uses activations.",
-  'Hijack: the stolen Vehicle leaves the enemy board and its Health becomes a shield on the hijacker (damage hits the shield first).',
+  'Hijack: the stolen Vehicle leaves the enemy board and its Health becomes a shield on the hijacker (damage hits the shield first). Master Chief\'s power is the same rule, on his strongest unit.',
   'The player going second starts with resource 1, so their first Resource step takes them to 2 (rules.md; --ahead 0 turns it off). --extra N gives them N extra opening cards (off; tested and dropped).',
   'Optional test (--coin 1, off by default): the player going second also gets a one-time Coin worth +1 resource for one turn, spent the first time it makes a unit in hand affordable.',
   'Expansion cards (1.5): Rally fires on every Redeploy, including free ones; the bot Redeploys every Rally unit it can afford each turn, toward a combined-arms partner, else within the same zone.',
@@ -75,8 +75,21 @@ export function configure(o = {}) {
   if (o.breakRes != null) BREAKRES = +o.breakRes;
   if (o.breakShield != null) BREAKSHIELD = +o.breakShield;
   if (o.heroes != null) HEROES = !!o.heroes;
+  if (o.counter != null) COUNTER_BONUS = +o.counter;
+  if (o.counterOff != null) COUNTER_OFF = [].concat(o.counterOff);   // heroes whose counter bonus is dropped (experiment)
+  // Comeback trigger (2026-10-27): charge (rules: a charge each time your shield breaks; the power spends CHARGE_COST).
+  // Experiments: units (the old 2+ units behind gate) | life (LIFE_GAP+ life behind) | cooldown (units gate, once per COOLDOWN own turns)
+  if (o.heroMode != null) HERO_MODE = o.heroMode;
+  if (o.lifeGap != null) LIFE_GAP = +o.lifeGap;
+  if (o.chargeCost != null) CHARGE_COST = +o.chargeCost;
+  if (o.cooldown != null) COOLDOWN = +o.cooldown;
+  if (o.chiefPower != null) CHIEF = o.chiefPower;          // vehicle (rules: Hijack, as the keyword) | any (old: take any unit)
+  if (o.sparkDamage != null) SPARK_DMG = o.sparkDamage;   // none (rules, 2026-10-28: freeze only) | one (damage one frozen unit) | all
+  if (o.heroOff != null) HERO_OFF = [].concat(o.heroOff);
+  if (o.heroCost != null) HERO_COST = +o.heroCost;
+  if (o.heroGate != null) HERO_GATE = +o.heroGate;
   for (const k of ['cols', 'cap', 'hand', 'draw', 'grow', 'start']) if (o[k] != null) ({ cols: () => (COLS = +o.cols), cap: () => (CAP = +o.cap), hand: () => (HAND = +o.hand), draw: () => (DRAW = +o.draw), grow: () => (GROW = +o.grow), start: () => (START = +o.start) })[k]();
-  return { heroes: HEROES, breakDraw: BREAKDRAW, shield: HSHIELD, cols: COLS, cap: CAP, hand: HAND, draw: DRAW, grow: GROW, start: START, life: LIFE, skip: SKIP, smart: SMART, extra: EXTRA, ahead: AHEAD, coin: COIN, block: BLOCK, sick: SICK, naive: NAIVE };
+  return { heroes: HEROES, counter: COUNTER_BONUS, heroCost: HERO_COST, heroGate: HERO_GATE, breakDraw: BREAKDRAW, shield: HSHIELD, cols: COLS, cap: CAP, hand: HAND, draw: DRAW, grow: GROW, start: START, life: LIFE, skip: SKIP, smart: SMART, extra: EXTRA, ahead: AHEAD, coin: COIN, block: BLOCK, sick: SICK, naive: NAIVE };
 }
 let seed = 1;
 // Per-game record the balance report reads: which cards were dealt, drawn and played.
@@ -267,36 +280,45 @@ let PLASMA = 1;
 function heroHit(p, n, mult = 1) {
   const sh = p.hshield || 0, s = Math.min(n, Math.ceil(sh / mult)); p.hshield = Math.max(0, sh - s * mult); p.life -= n - s;
   if (n - s > 0 && GS && GS.firstHurt == null) GS.firstHurt = p.name;
+  if (n - s > 0 && !p.broke && p.life > 0) p.charge = (p.charge || 0) + 1;
   if (n - s > 0 && !p.broke && BREAKDRAW && p.life > 0) { p.broke = true; const k = Math.min(BREAKDRAW, p.deck.length); if (k) { draw(p, k); note(`${p.name}: shield broken — draws ${k}.`); } p.breakBonus = true; }
   return n - s;
 }
 const heroLeft = (p) => p.life + (p.hshield || 0);
 
-// Heroes: each faction's leader has a power that works only from behind. Once per turn, pay
-// HERO_COST, while the opponent has at least HERO_GATE more units on the board. Its level is how
+// Heroes: each faction's leader has a power that works only from behind. Each time damage gets past
+// your hero's shield to your life (once a turn), you gain a charge. Once per turn, pay HERO_COST and spend
+// CHARGE_COST charges to use the power. (HERO_GATE is the old unit gate, kept as an experiment.) Its level is how
 // many units behind, minus 1 (1 to 4), +1 against the hero this one counters. Infection Forms count as 3/4 of a
 // unit (4 of them = 3 units, rounded down), or Flood's swarm keeps every opponent's power on. HEROES = false turns them off.
 let HEROES = true;
-const HERO_COST = 2, HERO_GATE = 2;
+let HERO_COST = 2, HERO_GATE = 2, COUNTER_BONUS = 1, HERO_OFF = [], SPARK_DMG = 'none', COUNTER_OFF = [], HERO_MODE = 'charge', LIFE_GAP = 15, CHARGE_COST = 1, COOLDOWN = 3, CHIEF = 'vehicle';
 const HERO_OF = { 'Human/UNSC': 'Master Chief', Covenant: 'The Arbiter', Forerunner: '343 Guilty Spark', Flood: 'Gravemind' };
 const POWER = { 'Master Chief': 'Hijack', 'The Arbiter': 'Camo Strike', '343 Guilty Spark': 'Containment', Gravemind: 'Assimilate' };
-const COUNTERS = { 'Master Chief': '343 Guilty Spark', '343 Guilty Spark': 'The Arbiter', 'The Arbiter': 'Gravemind', Gravemind: 'Master Chief' };
+const COUNTERS = { 'Master Chief': 'Gravemind', Gravemind: '343 Guilty Spark', '343 Guilty Spark': 'The Arbiter', 'The Arbiter': 'Master Chief' };
 const heroCount = (q) => q.board.reduce((s, u) => s + (u.id === IF ? 3 : 4), 0);
 const heroBehind = (p, o) => Math.floor((heroCount(o) - heroCount(p)) / 4);
-const heroLevel = (p, o) => Math.max(1, Math.min(4, heroBehind(p, o) - 1)) + (COUNTERS[p.hero] === o.hero ? 1 : 0);
+const heroLevel = (p, o) => Math.max(1, Math.min(4, heroBehind(p, o) - 1)) + (COUNTERS[p.hero] === o.hero && !COUNTER_OFF.includes(p.hero) ? COUNTER_BONUS : 0);
 const POWER_TEXT = {
-  'Master Chief': (L) => `Take control of an enemy unit with up to ${2 * L} Health left.`,
+  'Master Chief': (L) => `Hijack an enemy Vehicle with up to ${2 * L} Health left into one of your units' cells.`,
   'The Arbiter': (L) => `Deal ${3 * L} damage to an enemy unit.`,
-  '343 Guilty Spark': (L) => `Freeze ${L + 1} enemy units for their next turn and deal ${L} damage to each.`,
+  '343 Guilty Spark': (L) => SPARK_DMG === 'none' ? `Freeze ${L + 1} enemy units for their next turn.` : `Freeze ${L + 1} enemy units for their next turn and deal ${L} damage to ${SPARK_DMG === 'one' ? 'one of them' : 'each'}.`,
   Gravemind: (L) => `Destroy an enemy unit with up to ${2 * L} Health left, then put ${L} Infection Form${L > 1 ? 's' : ''} on your board.`,
 };
 // The hero power's effect now, or null when it cannot be used. The engine picks the target:
 // the strongest enemy unit the power can take or kill, as for every other automatic effect.
 function heroPower(p, o, turn) {
-  if (!HEROES || !POWER[p.hero] || p.usedPower === turn || p.res < HERO_COST || heroBehind(p, o) < HERO_GATE) return null;
+  if (!HEROES || !POWER[p.hero] || HERO_OFF.includes(p.hero) || p.usedPower === turn || p.res < HERO_COST) return null;
+  if (HERO_MODE === 'life' ? o.life - p.life < LIFE_GAP : HERO_MODE === 'charge' ? (p.charge || 0) < CHARGE_COST : heroBehind(p, o) < HERO_GATE) return null;
+  if (HERO_MODE === 'cooldown' && p.usedPower != null && turn - p.usedPower < 2 * COOLDOWN) return null;
   const L = heroLevel(p, o), left = (x) => hpMax(o, x) - x.dmg + x.shield;
   const strongest = (f) => o.board.filter(f).sort((x, y) => atk(o, y) - atk(o, x))[0];
   const name = `${p.hero}'s ${POWER[p.hero]} (level ${L})`;
+  if (p.hero === 'Master Chief' && CHIEF === 'vehicle') {
+    // Hijack, one rule with the keyword: the Vehicle is stacked into a unit's cell, its Health a shield there.
+    const t = strongest((x) => CARD[x.id].subtype === 'Vehicle' && !has(CARD[x.id], 'encrypt') && left(x) <= 2 * L), h = [...p.board].sort((x, y) => atk(p, y) - atk(p, x))[0];
+    return t && h ? () => { note(`${name} hijacks ${CARD[t.id].title} into ${CARD[h.id].title}'s cell.`); h.shield += Math.max(0, hpMax(o, t) - t.dmg); o.board = o.board.filter((x) => x !== t); } : null;
+  }
   if (p.hero === 'Master Chief') {
     const t = strongest((x) => !has(CARD[x.id], 'encrypt') && left(x) <= 2 * L), to = t && (bestCell(p, CARD[t.id]) || cells(p)[0]);
     return t && to ? () => { note(`${name} takes ${CARD[t.id].title}.`); o.board = o.board.filter((x) => x !== t); t.r = to.r; t.c = to.c; t.placed = turn; t.lastAtk = turn; p.board.push(t); } : null;
@@ -307,13 +329,13 @@ function heroPower(p, o, turn) {
   }
   if (p.hero === '343 Guilty Spark') {
     const ts = o.board.filter((x) => !x.stunned).sort((x, y) => atk(o, y) - atk(o, x)).slice(0, L + 1);
-    return ts.length ? () => { note(`${name} freezes ${ts.map((x) => CARD[x.id].title).join(', ')}.`); for (const x of ts) { x.stunned = true; damage(o, x, L); } } : null;
+    return ts.length ? () => { note(`${name} freezes ${ts.map((x) => CARD[x.id].title).join(', ')}.`); ts.forEach((x, k) => { x.stunned = true; if (SPARK_DMG === 'all' || (SPARK_DMG === 'one' && k === 0)) damage(o, x, L); }); } : null;
   }
   const t = strongest((x) => left(x) <= 2 * L);
   return t ? () => { note(`${name} assimilates ${CARD[t.id].title}.`); t.dmg = 999; cleanup(o); spawnAny(p, IF, L, turn); } : null;
 }
 function useHeroPower(p, o, turn, go) {
-  p.res -= HERO_COST; p.usedPower = turn; go(); cleanup(o); cleanup(p);
+  p.res -= HERO_COST; p.usedPower = turn; if (HERO_MODE === 'charge') p.charge -= CHARGE_COST; if (GS) { GS.powerUses ??= {}; GS.powerUses[p.name] = (GS.powerUses[p.name] || 0) + 1; } go(); cleanup(o); cleanup(p);
 }
 function heal(p, n) { p.life = Math.min(LIFE, p.life + n); }
 
@@ -762,6 +784,7 @@ function game(P, firstA) {
     go = heroPower(p, o, turn); if (go) useHeroPower(p, o, turn, go);
     attackPhase(p, o, turn);
     checkGlory(p, o, turn); checkGlory(o, p, turn);
+    if (GS) (GS.trace ??= []).push([heroCount(P[0]), heroCount(P[1])]);   // board size after each turn, for the steamroll probe
     if (o.life <= 0) return { winner: cur, turn };
     if (p.life <= 0) return { winner: 1 - cur, turn };
     cur = 1 - cur;
@@ -1050,7 +1073,7 @@ function tableView(state, seat) {
     };
     return {
       rows: ROWS, cols: COLS, rowNames: ROWNAME, cur: state.cur, active: activeSeat(state), phase: state.phase, turn: state.turn,
-      heroes: state.P.map((pl, i) => ({ seat: i, name: pl.name, hero: pl.hero ?? null, power: POWER[pl.hero] ?? null, counters: COUNTERS[pl.hero] ?? null, behind: heroBehind(pl, state.P[1 - i]), gate: HERO_GATE, level: heroLevel(pl, state.P[1 - i]), powerText: POWER_TEXT[pl.hero]?.(heroLevel(pl, state.P[1 - i])) ?? '', usedPower: pl.usedPower === state.turn, life: pl.life, shield: pl.hshield || 0, shieldMax: HSHIELD, res: pl.res, max: pl.max, deck: pl.deck.length, hand: pl.hand.length, skipping: !!pl.skipped })),
+      heroes: state.P.map((pl, i) => ({ seat: i, name: pl.name, hero: pl.hero ?? null, power: POWER[pl.hero] ?? null, counters: COUNTERS[pl.hero] ?? null, behind: heroBehind(pl, state.P[1 - i]), gate: HERO_GATE, charge: pl.charge || 0, chargeCost: CHARGE_COST, ready: (pl.charge || 0) >= CHARGE_COST, level: heroLevel(pl, state.P[1 - i]), powerText: POWER_TEXT[pl.hero]?.(heroLevel(pl, state.P[1 - i])) ?? '', usedPower: pl.usedPower === state.turn, life: pl.life, shield: pl.hshield || 0, shieldMax: HSHIELD, res: pl.res, max: pl.max, deck: pl.deck.length, hand: pl.hand.length, skipping: !!pl.skipped })),
       boards: state.P.map((pl, i) => pl.board.map((u) => unit(i, u))),
       hand: state.P[seat].hand.map((id, k) => { const c = CARD[id]; return { id: `h${seat}-${k}`, title: c.title, cost: c.cost, type: c.type, subtype: c.subtype ?? null, faction: c.faction, stats: c.stats || null, text: c.text, keywords: c.abilities ?? [] }; }),
       pending: state.pending ? { attacker: `u${state.pending.a}`, target: state.pending.t == null ? 'hero' : `u${state.pending.t}` } : null,

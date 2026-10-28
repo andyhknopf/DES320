@@ -124,7 +124,7 @@ function showDecks() {
   for (const d of DECKS) (byFaction[d.faction] ??= []).push(d);
   $('#deck').innerHTML = $('#foe').innerHTML = Object.entries(byFaction).map(([f, ds]) => `<optgroup label="${esc(f)}">${ds
     .sort((a, b) => order.indexOf(a.calibration) - order.indexOf(b.calibration))
-    .map((d) => `<option value="${esc(d.id)}">${esc(d.name)}${d.calibration === 'competitive' ? ' — competitive' : ''}</option>`).join('')}</optgroup>`).join('');
+    .map((d) => `<option value="${esc(d.id)}">${esc(d.name)}${d.calibration === 'competitive' ? ' — competitive (unbalanced)' : ''}</option>`).join('')}</optgroup>`).join('');
   const last = recall('halo-online-deck');
   if (last && DECKS.some((d) => d.id === last)) $('#deck').value = last;
   const lastFoe = recall('halo-online-foe');
